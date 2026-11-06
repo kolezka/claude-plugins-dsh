@@ -14,7 +14,7 @@ import {
   stripClaudeOnly,
   stripClaudeOnlyBlocks,
   toClaudeTranscript,
-} from './claude-compat.js'
+} from '../dist/claude-compat.js'
 
 process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'claude-compat-home-'))
 

@@ -1,14 +1,55 @@
 {
-  "name": "dsh-claude-compat",
+  "name": "@kolezka/claude-plugins-dsh",
   "version": "0.1.0",
   "description": "Run unmodified Claude Code plugins inside DeepSeek Harness (DSH)",
   "type": "module",
-  "exports": { ".": "./claude-compat.js" },
-  "files": ["claude-compat.js", "sync.sh", "scaffold.mjs", "inspect.mjs", "README.md", "LICENSE"],
-  "bin": { "dsh-claude-compat-inspect": "./inspect.mjs", "dsh-claude-compat-scaffold": "./scaffold.mjs" },
-  "scripts": { "test": "node --test" },
-  "engines": { "node": ">=20" },
+  "exports": {
+    ".": {
+      "types": "./dist/src/claude-compat.d.ts",
+      "default": "./dist/claude-compat.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "claude-plugins-dsh": "dist/bin/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && esbuild src/claude-compat.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/claude-compat.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "pnpm run build && node --test test/*.test.mjs",
+    "prepack": "pnpm run build",
+    "prepublishOnly": "pnpm run typecheck && pnpm test"
+  },
+  "engines": {
+    "node": ">=20"
+  },
   "license": "MIT",
-  "repository": { "type": "git", "url": "git+https://github.com/kolezka/dsh-claude-compat.git" },
-  "keywords": ["deepseek-harness", "dsh", "claude-code", "plugins", "cordis"]
+  "author": "Mariusz Rakus",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kolezka/claude-plugins-dsh.git"
+  },
+  "homepage": "https://github.com/kolezka/claude-plugins-dsh#readme",
+  "bugs": "https://github.com/kolezka/claude-plugins-dsh/issues",
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "claude-code",
+    "claude-code-plugins",
+    "cordis"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "packageManager": "pnpm@12.16.1",
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "esbuild": "0.28.2",
+    "typescript": "7.0.2"
+  }
 }

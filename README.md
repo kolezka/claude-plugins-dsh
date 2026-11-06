@@ -1,4 +1,4 @@
-# dsh-claude-compat
+# @kolezka/claude-plugins-dsh
 
 Run an unmodified [Claude Code](https://docs.claude.com/en/docs/claude-code) plugin inside
 [DeepSeek Harness](https://github.com/deepseek-ai) (DSH).
@@ -8,7 +8,16 @@ bundle and a copy of `claude-compat.js`. The bundle reads the plugin's own skill
 agents, hooks and instruction files and wires them into DSH. Claude Code never reads `dsh/`,
 so the same tree keeps working in both harnesses and there is nothing to keep in sync by hand.
 
-One file, no dependencies, Node 20 or newer.
+TypeScript sources, compiled JavaScript and declarations on npm. The vendored runtime is
+one file with no runtime dependencies. Node 20 or newer; hooks require a POSIX shell.
+
+```sh
+pnpm add @kolezka/claude-plugins-dsh
+```
+
+Adapters may import `createPlugin` and `rootFrom` from `@kolezka/claude-plugins-dsh` directly,
+or vendor the built runtime as shown below. Direct imports receive types; vendored copies
+stay self-contained and must be updated explicitly.
 
 ## What maps to what
 
@@ -42,12 +51,10 @@ servers, and per-agent model pins.
 ## Add it to a plugin
 
 ```sh
-mkdir -p dsh && curl -fsSL -o dsh/claude-compat.js \
-  https://raw.githubusercontent.com/kolezka/dsh-claude-compat/main/claude-compat.js
-node scaffold.mjs --scope @you /path/to/plugin
+pnpm dlx @kolezka/claude-plugins-dsh scaffold --scope @you /path/to/plugin
 ```
 
-`scaffold.mjs` writes `dsh/package.json` (package `@you/<plugin>-dsh`, or `<plugin>-dsh` without
+`scaffold` writes `dsh/package.json` (package `@you/<plugin>-dsh`, or `<plugin>-dsh` without
 `--scope`), `dsh/locale/en.json` and the runtime copy. You write two small files yourself.
 
 `dsh/index.js`:
@@ -80,7 +87,7 @@ export default plugin
 Check what it registers without starting DSH:
 
 ```sh
-node inspect.mjs /path/to/plugin
+pnpm dlx @kolezka/claude-plugins-dsh inspect /path/to/plugin
 ```
 
 ## Install into DSH
@@ -104,15 +111,32 @@ A row config can turn parts off: `config: { disable: [hooks] }`.
 ## Keeping vendored copies current
 
 ```sh
-./sync.sh plugin-a plugin-b          # copy claude-compat.js into each plugin's dsh/
-./sync.sh --check plugin-a plugin-b  # exit 1 if any copy drifted
+pnpm dlx @kolezka/claude-plugins-dsh sync plugin-a plugin-b
+pnpm dlx @kolezka/claude-plugins-dsh sync --check plugin-a plugin-b
 ```
 
-## Tests
+## Development
 
 ```sh
-node --test
+pnpm install --frozen-lockfile
+pnpm run typecheck
+pnpm test
+pnpm pack
 ```
+
+`pnpm run build` compiles the typed modules and CLI, emits declarations, and bundles
+`dist/claude-compat.js` for existing adapters. Generated files are not committed.
+Tests run against the compiled runtime and CLI. `prepack` builds before packaging.
+
+Publishing requires npm access to the `kolezka` scope:
+
+```sh
+npm login
+npm publish --access public
+```
+
+`prepublishOnly` runs type checking and tests before publication. Do not put registry tokens
+in the repository. Run `inspect` only on trusted plugins: it imports their JavaScript.
 
 ## Used by
 
