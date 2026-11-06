@@ -1,0 +1,14 @@
+{
+  "name": "dsh-claude-compat",
+  "version": "0.1.0",
+  "description": "Run unmodified Claude Code plugins inside DeepSeek Harness (DSH)",
+  "type": "module",
+  "exports": { ".": "./claude-compat.js" },
+  "files": ["claude-compat.js", "sync.sh", "scaffold.mjs", "inspect.mjs", "README.md", "LICENSE"],
+  "bin": { "dsh-claude-compat-inspect": "./inspect.mjs", "dsh-claude-compat-scaffold": "./scaffold.mjs" },
+  "scripts": { "test": "node --test" },
+  "engines": { "node": ">=20" },
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/kolezka/dsh-claude-compat.git" },
+  "keywords": ["deepseek-harness", "dsh", "claude-code", "plugins", "cordis"]
+}
