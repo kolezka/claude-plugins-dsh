@@ -2,6 +2,18 @@
 import { spawn } from 'node:child_process'
 import { DEFAULT_HOOK_TIMEOUT_S, type HookSpec } from './plugin-files.js'
 
+const PLACEHOLDERS = ['CLAUDE_PLUGIN_ROOT', 'CLAUDE_PROJECT_DIR'] as const
+
+/** Exec-form substitution: each placeholder becomes its value as plain text, never shell syntax. */
+function expandPlaceholders(text: string, env: Record<string, string | undefined>): string {
+  let out = text
+  for (const name of PLACEHOLDERS) {
+    const value = env[name]
+    if (value !== undefined) out = out.replaceAll('${' + name + '}', value).replaceAll('$' + name, value)
+  }
+  return out
+}
+
 export const HOOK_STDOUT_LIMIT = 256 * 1024
 // Grace period for stdout after the hook process exits, in case a backgrounded child
 // keeps the pipe open (Claude Code does not wait for those either).
@@ -35,14 +47,17 @@ export interface HookOutcome {
  * The hook runs in its own process group; a timeout or abort kills the whole group, and
  * the result is taken at process exit, not when every inherited stdout handle closes.
  */
-export function runHook(hook: Pick<HookSpec, 'command'> & { timeout?: number }, input: { cwd?: string } & Record<string, unknown>, env: Record<string, string | undefined>, signal?: AbortSignal): Promise<HookRunResult> {
+export function runHook(hook: Pick<HookSpec, 'command'> & { args?: string[] | undefined; timeout?: number }, input: { cwd?: string } & Record<string, unknown>, env: Record<string, string | undefined>, signal?: AbortSignal): Promise<HookRunResult> {
   return new Promise((resolvePromise) => {
     let stdout = ''
     let stderr = ''
     let truncated = false
     let settled = false
     let drain: NodeJS.Timeout | undefined
-    const child = spawn('/bin/sh', ['-c', hook.command], { cwd: input.cwd || process.cwd(), env, stdio: ['pipe', 'pipe', 'pipe'], detached: true })
+    const options = { cwd: input.cwd || process.cwd(), env, stdio: ['pipe', 'pipe', 'pipe'] as ['pipe', 'pipe', 'pipe'], detached: true }
+    const child = hook.args
+      ? spawn(expandPlaceholders(hook.command, env), hook.args.map((arg) => expandPlaceholders(arg, env)), options)
+      : spawn('/bin/sh', ['-c', hook.command], options)
     const killGroup = (): void => {
       try {
         if (child.pid !== undefined) process.kill(-child.pid, 'SIGKILL')

@@ -479,3 +479,41 @@ test('tool_response follows Claude Code shapes per tool', () => {
     truncated: false,
   })
 })
+
+test('exec-form hooks pass args without a shell and expand the plugin root per element', async () => {
+  // A root with a space, `$`, a quote and a backtick would break any shell-joined command line.
+  const root = mkdtempSync(join(tmpdir(), "claude compat $HOME 'q' `x`-"))
+  mkdirSync(join(root, '.claude-plugin'))
+  mkdirSync(join(root, 'hooks'))
+  writeFileSync(join(root, '.claude-plugin/plugin.json'), '{"name":"exec"}')
+  writeFileSync(join(root, 'hooks/argv.sh'), 'cat >/dev/null; printf "%s\\n" "$@" > "$CLAUDE_PLUGIN_ROOT/argv.txt"; echo "denied by argv" >&2; exit 2\n')
+  const hooks = [{ type: 'command', command: '/bin/sh', args: ['${CLAUDE_PLUGIN_ROOT}/hooks/argv.sh', 'pre-tool', '$(touch pwned) ; *'] }]
+  writeFileSync(join(root, 'hooks/hooks.json'), JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'WebFetch', hooks }] } }))
+  const ctx = fakeCtx()
+  createPlugin({ root }).apply(ctx, {})
+  const cwd = mkdtempSync(join(tmpdir(), 'claude-compat-cwd-'))
+  const decision = await ctx.listeners['tools/pre-execute'][0]({ name: 'web_fetch', arguments: { url: 'https://x' }, callId: 'c', agent: fakeAgent([], { cwd }) }, async () => ({ kind: 'allow' }))
+  assert.deepEqual(decision, { kind: 'deny', reason: 'denied by argv' })
+  assert.deepEqual(readFileSync(join(root, 'argv.txt'), 'utf8').split('\n').slice(0, -1), ['pre-tool', '$(touch pwned) ; *'])
+  assert.equal(existsSync(join(cwd, 'pwned')), false)
+})
+
+test('onFailure "block" turns a failed PreToolUse hook into a deny; the default does not', async () => {
+  const decide = async (hook) => {
+    const root = fixture({
+      '.claude-plugin/plugin.json': '{"name":"fail"}',
+      'hooks/hooks.json': JSON.stringify({ hooks: { PreToolUse: [{ matcher: '*', hooks: [{ type: 'command', ...hook }] }] } }),
+    })
+    const ctx = fakeCtx()
+    createPlugin({ root }).apply(ctx, {})
+    return ctx.listeners['tools/pre-execute'][0]({ name: 'web_search', arguments: {}, callId: 'c', agent: fakeAgent() }, async () => ({ kind: 'allow' }))
+  }
+  const exit1 = { command: '/bin/sh', args: ['-c', 'cat >/dev/null; echo broken >&2; exit 1'] }
+  assert.deepEqual(await decide(exit1), { kind: 'allow' })
+  const blocked = await decide({ ...exit1, onFailure: 'block' })
+  assert.equal(blocked.kind, 'deny')
+  assert.match(blocked.reason, /broken/)
+  assert.equal((await decide({ command: 'definitely-not-a-program-xyz', args: [], onFailure: 'block' })).kind, 'deny')
+  assert.equal((await decide({ command: 'sleep 30', timeout: 1, onFailure: 'block' })).kind, 'deny')
+  assert.deepEqual(await decide({ ...exit1, onFailure: 'continue' }), { kind: 'allow' })
+})
