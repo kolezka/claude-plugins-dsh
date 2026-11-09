@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import type { Agent, HostContext, PreToolDecision, SkillCandidate, SkillDefinition, SkillProvider, UserMessage } from './dsh-types.js'
+import type { Agent, HostContext, PostToolDecision, PreToolDecision, SkillCandidate, SkillDefinition, SkillProvider, UserMessage } from './dsh-types.js'
 import { interpretHookResult, runHook, type HookOutcome, type HookRunResult } from './hooks.js'
 import {
   discoverAgents,
@@ -24,7 +24,7 @@ import {
   type HookSpec,
   type SkillOptions,
 } from './plugin-files.js'
-import { claudeToolName, dropTranscript, lastAssistantText, parseArguments, syncTranscript, textOf, toClaudeToolInput, transcriptPath } from './transcript.js'
+import { claudeToolName, dropTranscript, lastAssistantText, parseArguments, syncTranscript, textOf, toClaudeToolInput, toClaudeToolResponse, transcriptPath } from './transcript.js'
 
 export const COMPAT_VERSION = '0.1.0'
 export const SKILL_RANK = 450
@@ -371,32 +371,66 @@ export function createPlugin(spec: PluginSpec): DshPlugin {
         injectContext(agent, 'PreToolUse', results)
         const deny = results.find((r) => r.decision === 'deny' || r.decision === 'block')
         if (deny) return { kind: 'deny', reason: deny.reason || `denied by ${pluginName} hook` }
+        // DSH has no updatedInput in PreToolDecision. Running the original arguments
+        // after a hook rewrote them would silently bypass the hook, so fail closed.
+        const rewrote = results.find((r) => r.updatedInput !== undefined)
+        if (rewrote) {
+          return {
+            kind: 'deny',
+            reason: `${pluginName} hook returned updatedInput, which DSH cannot apply; refusing to run the unmodified tool input`,
+          }
+        }
         const ask = results.find((r) => r.decision === 'ask')
         if (ask) {
           const reason = ask.reason || `${pluginName} hook asks for confirmation`
           return { kind: 'ask', reason, displayReason: { en: reason } }
         }
-        return next()
+        const decision = await next()
+        // A hook's explicit allow suppresses an approval prompt, but a later deny
+        // still wins, matching Claude Code's precedence.
+        const allow = results.find((r) => r.decision === 'allow')
+        if (allow && decision.kind === 'ask') return { kind: 'allow' }
+        return decision
       })
     }
 
     if (byEvent('PostToolUse').length) {
-      ctx.on('tools/result', (exec, result) => {
+      ctx.on('tools/post-execute', async (exec, result, next): Promise<PostToolDecision> => {
+        const decision = await next()
         const agent = exec.agent
-        if (!agent) return
+        if (!agent) return decision
         const toolName = claudeToolName(exec.name)
         const matches = (hook: HookSpec): boolean => matcherMatches(hook.matcher, toolName)
-        if (!byEvent('PostToolUse').some(matches)) return
-        const output = textOf(result)
-        const response = result?.isError ? { success: false, error: output } : { success: true, output }
-        fire(
+        if (!byEvent('PostToolUse').some(matches)) return decision
+        const args = parseArguments(exec.arguments)
+        const results = await fire(
           'PostToolUse',
           agent,
-          { tool_name: toolName, tool_input: toClaudeToolInput(exec.name, parseArguments(exec.arguments)), tool_response: response, tool_use_id: String(exec.callId) },
-          { filter: matches },
+          {
+            tool_name: toolName,
+            tool_input: toClaudeToolInput(exec.name, args),
+            tool_response: toClaudeToolResponse(exec.name, args, result),
+            tool_use_id: String(exec.callId),
+          },
+          { filter: matches, signal: exec.signal },
         )
-          .then((results) => injectContext(agent, 'PostToolUse', results))
-          .catch((error: unknown) => warn(`PostToolUse: ${(error as Error).message}`))
+        const text = contextOf(results)
+        const contexts = text ? [hookMessage('PostToolUse', text)] : []
+        const blocked = results.find((r) => r.decision === 'block' || r.decision === 'deny')
+        if (blocked) {
+          return {
+            kind: 'block',
+            feedback: [{ type: 'text', text: blocked.reason || `blocked by ${pluginName} hook` }],
+            ...(contexts.length ? { additionalContexts: contexts } : {}),
+          }
+        }
+        if (!contexts.length) return decision
+        // PostToolDecision.additionalContexts reaches the model with the result; agent.inject
+        // can miss the next step when the turn ends on this tool call.
+        if (decision.kind === 'accept' || decision.kind === 'block') {
+          return { ...decision, additionalContexts: [...(decision.additionalContexts ?? []), ...contexts] }
+        }
+        return decision
       })
     }
 

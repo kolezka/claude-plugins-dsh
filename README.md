@@ -6,18 +6,28 @@ Run an unmodified [Claude Code](https://docs.claude.com/en/docs/claude-code) plu
 You add a `dsh/` directory next to the plugin's `.claude-plugin/`. It holds a small DSH
 bundle and a copy of `claude-compat.js`. The bundle reads the plugin's own skills, commands,
 agents, hooks and instruction files and wires them into DSH. Claude Code never reads `dsh/`,
-so the same tree keeps working in both harnesses and there is nothing to keep in sync by hand.
+so the same tree keeps working in both harnesses. The vendored runtime is refreshed with
+`sync`, not by hand.
 
-TypeScript sources, compiled JavaScript and declarations on npm. The vendored runtime is
-one file with no runtime dependencies. Node 20 or newer; hooks require a POSIX shell.
+TypeScript sources, compiled JavaScript and declarations. The vendored runtime is one file
+with no runtime dependencies. Node 20 or newer; hooks require a POSIX shell.
+
+The npm package is not published yet. Until the first release, build it from a checkout:
 
 ```sh
-pnpm add @kolezka/claude-plugins-dsh
+git clone https://github.com/kolezka/claude-plugins-dsh
+cd claude-plugins-dsh
+pnpm install --frozen-lockfile
+pnpm run build
 ```
 
-Adapters may import `createPlugin` and `rootFrom` from `@kolezka/claude-plugins-dsh` directly,
-or vendor the built runtime as shown below. Direct imports receive types; vendored copies
-stay self-contained and must be updated explicitly.
+From that checkout, `pnpm add file:/path/to/claude-plugins-dsh` gives typed imports, and
+`node dist/bin/cli.js` runs the CLI. Replace every `pnpm dlx @kolezka/claude-plugins-dsh`
+below with that `node` command until the package is on npm.
+
+Adapters may import `createPlugin` and `rootFrom` directly, or vendor the built runtime as
+shown below. Direct imports receive types; vendored copies stay self-contained and must be
+updated with `sync`.
 
 ## What maps to what
 
@@ -27,8 +37,8 @@ stay self-contained and must be updated explicitly.
 | `commands/<n>.md` | `/<plugin>-<n>` slash command (prefix configurable); the body, with `$ARGUMENTS` and `$1` to `$9`, becomes the next turn |
 | `agents/<n>.md` | skill `<plugin>-agent-<n>`: a role brief to pass to `subagent` or `spawn_teammate` |
 | `CLAUDE.md`-style files you list | system prompt section, with `<!--harness:claude-only-->` blocks removed |
-| `PreToolUse` hook | `tools/pre-execute`; `ask` becomes a DSH approval, `deny` or exit 2 denies |
-| `PostToolUse` hook | `tools/result`, fire and forget |
+| `PreToolUse` hook | `tools/pre-execute`; `ask` becomes a DSH approval, `deny` or exit 2 denies, `updatedInput` is denied because DSH cannot rewrite arguments |
+| `PostToolUse` hook | `tools/post-execute`; exit 2 blocks the result and its stderr becomes the feedback, `additionalContext` rides on the decision |
 | `SessionStart` hook | `agent/created` of a root agent (subagents skipped, as in Claude Code) |
 | `UserPromptSubmit` hook | a step carrying a user message; a block keeps the prompt from the model |
 | `Stop`, `SubagentStop` hooks | `agent/turn-stopping`; `{"decision":"block"}` steers one more step |
@@ -36,7 +46,9 @@ stay self-contained and must be updated explicitly.
 | `.mcp.json` | not handled here: add `@deepseek-ai/dsh-mcp-client` rows to the bundle patch |
 
 Hooks get Claude Code's stdin JSON: `session_id`, `cwd`, `hook_event_name`, `tool_name` using
-Claude names such as `Bash`, `tool_input`, `stop_hook_active` and `transcript_path`. Their
+Claude names such as `Bash`, `tool_input`, `stop_hook_active` and `transcript_path`.
+`tool_response` uses Claude's per-tool shape: `stdout` and `stderr` for Bash, `file.content`
+for Read, `filePath` plus edit strings for Write and Edit, and `filenames` for Glob. Their
 environment has `CLAUDE_PLUGIN_ROOT` and `CLAUDE_PROJECT_DIR`, plus `CLAUDE_HARNESS=dsh` so a
 script can tell the two harnesses apart. Matching hooks run in parallel, each in its own process
 group. A timeout or a cancelled turn kills the whole group.

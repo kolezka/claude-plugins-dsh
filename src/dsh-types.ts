@@ -79,6 +79,11 @@ export interface ToolExecutionResult {
   content?: readonly ContentBlock[]
 }
 
+export type PostToolDecision =
+  | { kind: 'accept'; content?: ContentBlock[]; value?: never; additionalContexts?: UserMessage[] }
+  | { kind: 'accept'; value: unknown; content?: never; additionalContexts?: UserMessage[] }
+  | { kind: 'block'; feedback: ContentBlock[]; additionalContexts?: UserMessage[] }
+
 export type SkillSource = 'custom' | (string & {})
 
 export interface SkillInvocationPolicy {
@@ -164,6 +169,7 @@ export interface HostEvents {
   'agent/turn-stopping': (payload: { agent: Agent; turn?: number; signal?: AbortSignal }) => undefined | Promise<undefined>
   'agent/disposed': (payload: { agent: Agent }) => void
   'tools/pre-execute': (exec: ToolExecution, next: () => Promise<PreToolDecision>) => Promise<PreToolDecision>
+  'tools/post-execute': (exec: ToolExecution, result: Readonly<ToolExecutionResult>, next: () => Promise<PostToolDecision>) => Promise<PostToolDecision>
   'tools/result': (exec: ToolExecution, result: ToolExecutionResult) => void
 }
 

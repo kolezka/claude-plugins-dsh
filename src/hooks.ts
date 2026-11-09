@@ -24,6 +24,8 @@ export interface HookOutcome {
   context: string[]
   decision: HookDecision | undefined
   reason: string | undefined
+  /** PreToolUse rewrite requested by the hook; DSH cannot apply it, so callers must fail closed. */
+  updatedInput: Record<string, unknown> | undefined
   /** Text for the operator log, never for the model. */
   notices: string[]
 }
@@ -88,7 +90,7 @@ export function runHook(hook: Pick<HookSpec, 'command'> & { timeout?: number }, 
 }
 
 interface HookJsonOutput {
-  hookSpecificOutput?: { additionalContext?: unknown; permissionDecision?: string; permissionDecisionReason?: string }
+  hookSpecificOutput?: { additionalContext?: unknown; permissionDecision?: string; permissionDecisionReason?: string; updatedInput?: unknown }
   systemMessage?: unknown
   decision?: string
   reason?: string
@@ -102,7 +104,7 @@ interface HookJsonOutput {
  *   SessionStart and UserPromptSubmit, as in Claude Code.
  */
 export function interpretHookResult(result: HookRunResult, event?: string): HookOutcome {
-  const out: HookOutcome = { context: [], decision: undefined, reason: undefined, notices: [] }
+  const out: HookOutcome = { context: [], decision: undefined, reason: undefined, updatedInput: undefined, notices: [] }
   if (result.code === 2) {
     out.decision = 'block'
     out.reason = result.stderr.trim() || 'blocked by hook'
@@ -124,6 +126,7 @@ export function interpretHookResult(result: HookRunResult, event?: string): Hook
   }
   const specific = json.hookSpecificOutput ?? {}
   if (specific.additionalContext) out.context.push(String(specific.additionalContext))
+  if (specific.updatedInput && typeof specific.updatedInput === 'object' && !Array.isArray(specific.updatedInput)) out.updatedInput = specific.updatedInput as Record<string, unknown>
   if (json.systemMessage) out.notices.push(String(json.systemMessage))
   if (specific.permissionDecision) {
     out.decision = specific.permissionDecision

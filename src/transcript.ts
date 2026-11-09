@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto'
 import { appendFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
-import type { Agent, ContentBlock, Session, SessionEvent, UserMessage } from './dsh-types.js'
+import type { Agent, ContentBlock, Session, SessionEvent, ToolExecutionResult, UserMessage } from './dsh-types.js'
 
 // DSH tool name -> Claude Code tool name, for matchers and tool_name in hook input.
 export const TOOL_NAME_MAP: Readonly<Record<string, string>> = {
@@ -13,7 +13,7 @@ export const TOOL_NAME_MAP: Readonly<Record<string, string>> = {
   read_image: 'Read',
   write: 'Write',
   edit: 'Edit',
-  str_replace_based_edit_tool: 'Edit',
+  str_replace_editor: 'Edit',
   glob: 'Glob',
   grep: 'Grep',
   web_fetch: 'WebFetch',
@@ -59,6 +59,43 @@ export function toClaudeToolInput(dshName: string, args: ToolInput | undefined):
   }
   if (dshName === 'skill' && input.name && input.skill === undefined) input.skill = input.name
   return input
+}
+
+/** DSH tool result -> the `tool_response` Claude Code hands to PostToolUse hooks. */
+export function toClaudeToolResponse(dshName: string, args: ToolInput | undefined, result: ToolExecutionResult): ToolInput {
+  const input = args ?? {}
+  const output = textOf(result)
+  const isError = result?.isError === true
+  switch (dshName) {
+    case 'bash':
+      return { stdout: isError ? '' : output, stderr: isError ? output : '', interrupted: false, isImage: false }
+    case 'read':
+    case 'read_image':
+      return { type: 'text', file: { filePath: String(input.file_path ?? input.path ?? ''), content: output } }
+    case 'write':
+      return { type: 'update', filePath: String(input.file_path ?? ''), content: String(input.content ?? ''), originalFile: null }
+    case 'edit':
+    case 'str_replace_editor':
+      return {
+        filePath: String(input.file_path ?? input.path ?? ''),
+        oldString: String(input.old_string ?? input.old_str ?? ''),
+        newString: String(input.new_string ?? input.new_str ?? ''),
+      }
+    case 'glob': {
+      const filenames = output.split('\n').map((line) => line.trim()).filter(Boolean)
+      return { filenames, durationMs: 0, numFiles: filenames.length, truncated: false }
+    }
+    case 'grep': {
+      const lines = output.split('\n').filter(Boolean)
+      return { content: output, numFiles: lines.length }
+    }
+    case 'web_fetch':
+      return { url: String(input.url ?? ''), result: output }
+    case 'web_search':
+      return { query: String(input.query ?? (Array.isArray(input.queries) ? input.queries.join(' ') : '')), results: output }
+    default:
+      return { content: output, isError }
+  }
 }
 
 type TranscriptBlock =
