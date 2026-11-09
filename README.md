@@ -12,18 +12,13 @@ so the same tree keeps working in both harnesses. The vendored runtime is refres
 TypeScript sources, compiled JavaScript and declarations. The vendored runtime is one file
 with no runtime dependencies. Node 20 or newer; hooks require a POSIX shell.
 
-The npm package is not published yet. Until the first release, build it from a checkout:
+Install the package:
 
 ```sh
-git clone https://github.com/kolezka/claude-plugins-dsh
-cd claude-plugins-dsh
-pnpm install --frozen-lockfile
-pnpm run build
+pnpm add @kolezka/claude-plugins-dsh
 ```
 
-From that checkout, `pnpm add file:/path/to/claude-plugins-dsh` gives typed imports, and
-`node dist/bin/cli.js` runs the CLI. Replace every `pnpm dlx @kolezka/claude-plugins-dsh`
-below with that `node` command until the package is on npm.
+`pnpm dlx @kolezka/claude-plugins-dsh` runs the CLI without installing it.
 
 Adapters may import `createPlugin` and `rootFrom` directly, or vendor the built runtime as
 shown below. Direct imports receive types; vendored copies stay self-contained and must be
