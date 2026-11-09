@@ -294,9 +294,14 @@ export function createPlugin(spec: PluginSpec): DshPlugin {
           runHook(hook, input, env, options.signal).catch((error: unknown): HookRunResult => ({ code: null, stdout: '', stderr: String((error as Error)?.message ?? error), timedOut: false })),
         ),
       )
-      return settled.map((result) => {
-        if (!result.aborted && (result.timedOut || (result.code !== 0 && result.code !== 2))) warn(`${event} hook exited ${result.code}: ${result.stderr.trim().slice(0, 300)}`)
+      return settled.map((result, index) => {
+        const failed = !result.aborted && (result.timedOut || (result.code !== 0 && result.code !== 2))
+        if (failed) warn(`${event} hook exited ${result.code}: ${result.stderr.trim().slice(0, 300)}`)
         const interpreted = interpretHookResult(result, event)
+        if (failed && list[index]!.onFailure === 'block') {
+          interpreted.decision = 'block'
+          interpreted.reason = `${pluginName} hook failed and its onFailure is "block": ${result.stderr.trim().slice(0, 300) || `exit ${result.code}`}`
+        }
         for (const notice of interpreted.notices) warn(`${event}: ${notice}`)
         return interpreted
       })

@@ -44,6 +44,10 @@ export interface HookSpec {
   event: string
   matcher: string
   command: string
+  /** Exec form: `command` is spawned directly with these arguments, no shell. */
+  args?: string[]
+  /** `block` makes a crash, timeout or exit code other than 0 and 2 count as a block. */
+  onFailure?: 'block' | 'continue'
   /** Seconds. */
   timeout: number
 }
@@ -205,7 +209,7 @@ export function discoverAgents(root: string, options: AgentOptions = {}): AgentF
 }
 
 interface HooksJson {
-  hooks?: Record<string, Array<{ matcher?: string; hooks?: Array<{ type?: string; command?: string; timeout?: number }> }> | undefined>
+  hooks?: Record<string, Array<{ matcher?: string; hooks?: Array<{ type?: string; command?: string; args?: unknown; onFailure?: string; timeout?: number }> }> | undefined>
 }
 
 /** hooks/hooks.json command hooks, flattened. Function-hook `modules` are Claude-only and skipped. */
@@ -218,7 +222,14 @@ export function readHooks(root: string): HookSpec[] {
     for (const group of groups ?? []) {
       for (const hook of group.hooks ?? []) {
         if (hook.type !== 'command' || !hook.command) continue
-        out.push({ event, matcher: group.matcher ?? '', command: hook.command, timeout: hook.timeout ?? DEFAULT_HOOK_TIMEOUT_S })
+        const spec: HookSpec = { event, matcher: group.matcher ?? '', command: hook.command, timeout: hook.timeout ?? DEFAULT_HOOK_TIMEOUT_S }
+        if (hook.args !== undefined) {
+          // Running a malformed exec hook through a shell would quietly run something else.
+          if (!Array.isArray(hook.args) || !hook.args.every((arg) => typeof arg === 'string')) throw new Error(`hooks.json: ${event} hook "${hook.command}" has args that are not a list of strings`)
+          spec.args = hook.args
+        }
+        if (hook.onFailure === 'block' || hook.onFailure === 'continue') spec.onFailure = hook.onFailure
+        out.push(spec)
       }
     }
   }

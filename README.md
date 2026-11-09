@@ -45,7 +45,7 @@ Claude names such as `Bash`, `tool_input`, `stop_hook_active` and `transcript_pa
 `tool_response` uses Claude's per-tool shape: `stdout` and `stderr` for Bash, `file.content`
 for Read, `filePath` plus edit strings for Write and Edit, and `filenames` for Glob. Their
 environment has `CLAUDE_PLUGIN_ROOT` and `CLAUDE_PROJECT_DIR`, plus `CLAUDE_HARNESS=dsh` so a
-script can tell the two harnesses apart. Matching hooks run in parallel, each in its own process
+script can tell the two harnesses apart. A hook with `args` runs in exec form, as in Claude Code: `command` is spawned directly with those arguments and no shell, and `${CLAUDE_PLUGIN_ROOT}` and `${CLAUDE_PROJECT_DIR}` are replaced inside each argument as plain text. `onFailure: "block"` makes a crash, a timeout or an exit code other than 0 and 2 count as a block. Matching hooks run in parallel, each in its own process
 group. A timeout or a cancelled turn kills the whole group.
 
 `transcript_path` points at a Claude-shaped JSONL export of the DSH session under
