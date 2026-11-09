@@ -13,8 +13,9 @@ import {
   runHook,
   stripClaudeOnly,
   stripClaudeOnlyBlocks,
+  toClaudeToolResponse,
   toClaudeTranscript,
-} from './claude-compat.js'
+} from '../dist/claude-compat.js'
 
 process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'claude-compat-home-'))
 
@@ -366,4 +367,115 @@ test('subagent sessions fire SubagentStop, not Stop', async () => {
   const agent = fakeAgent([], { origin: 'subagent' })
   await ctx.listeners['agent/turn-stopping'][0]({ agent, turn: 1, signal: live() })
   assert.equal(agent.steered.length, 0)
+})
+
+test('hook result exposes updatedInput without inventing a decision', () => {
+  const out = interpretHookResult({ code: 0, stdout: '{"hookSpecificOutput":{"updatedInput":{"command":"safe"}}}', stderr: '' }, 'PreToolUse')
+  assert.deepEqual(out.updatedInput, { command: 'safe' })
+  assert.equal(out.decision, undefined)
+})
+
+test('PreToolUse denies rather than run arguments a hook rewrote', async () => {
+  const root = fixture({
+    '.claude-plugin/plugin.json': '{"name":"rewrite"}',
+    'hooks/hooks.json': JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: `cat >/dev/null; printf '{"hookSpecificOutput":{"permissionDecision":"allow","updatedInput":{"command":"safe"}}}'` }] }] } }),
+  })
+  const ctx = fakeCtx()
+  createPlugin({ root }).apply(ctx, {})
+  let called = false
+  const decision = await ctx.listeners['tools/pre-execute'][0](
+    { name: 'bash', arguments: { command: 'rm -rf /' }, callId: 'c1', agent: fakeAgent() },
+    async () => {
+      called = true
+      return { kind: 'allow' }
+    },
+  )
+  assert.equal(decision.kind, 'deny')
+  assert.match(decision.reason, /updatedInput/)
+  assert.equal(called, false)
+})
+
+test('PreToolUse allow hides an approval prompt but not a deny', async () => {
+  const root = fixture({
+    '.claude-plugin/plugin.json': '{"name":"ok"}',
+    'hooks/hooks.json': JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: `cat >/dev/null; printf '{"hookSpecificOutput":{"permissionDecision":"allow"}}'` }] }] } }),
+  })
+  const ctx = fakeCtx()
+  createPlugin({ root }).apply(ctx, {})
+  const pre = ctx.listeners['tools/pre-execute'][0]
+  const exec = { name: 'bash', arguments: { command: 'ls' }, callId: 'c1', agent: fakeAgent() }
+  assert.deepEqual(await pre(exec, async () => ({ kind: 'ask', reason: 'sure?' })), { kind: 'allow' })
+  assert.deepEqual(await pre(exec, async () => ({ kind: 'deny', reason: 'no' })), { kind: 'deny', reason: 'no' })
+})
+
+test('PostToolUse blocks through tools/post-execute and sees Claude tool_response', async () => {
+  const root = fixture({
+    '.claude-plugin/plugin.json': '{"name":"post"}',
+    'hooks/post.sh': '#!/bin/sh\ncat > "$CLAUDE_PLUGIN_ROOT/post-input.json"\necho "lint failed" >&2\nexit 2\n',
+    'hooks/hooks.json': JSON.stringify({ hooks: { PostToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'sh "${CLAUDE_PLUGIN_ROOT}/hooks/post.sh"' }] }] } }),
+  })
+  const ctx = fakeCtx()
+  createPlugin({ root }).apply(ctx, {})
+  const agent = fakeAgent()
+  const decision = await ctx.listeners['tools/post-execute'][0](
+    { name: 'bash', arguments: { command: 'git push' }, callId: 'c1', agent },
+    { isError: false, content: [{ type: 'text', text: 'pushed' }] },
+    async () => ({ kind: 'accept' }),
+  )
+  assert.deepEqual(decision, { kind: 'block', feedback: [{ type: 'text', text: 'lint failed' }] })
+  const input = JSON.parse(readFileSync(join(root, 'post-input.json'), 'utf8'))
+  assert.equal(input.tool_name, 'Bash')
+  assert.equal(input.tool_input.command, 'git push')
+  assert.equal(input.tool_response.stdout, 'pushed')
+  assert.equal(input.tool_response.stderr, '')
+  assert.equal(input.tool_response.interrupted, false)
+})
+
+test('PostToolUse context rides on the decision, not agent.inject', async () => {
+  const root = fixture({
+    '.claude-plugin/plugin.json': '{"name":"ctx"}',
+    'hooks/hooks.json': JSON.stringify({ hooks: { PostToolUse: [{ matcher: 'Read', hooks: [{ type: 'command', command: `cat > "$CLAUDE_PLUGIN_ROOT/read-input.json"; printf '{"hookSpecificOutput":{"additionalContext":"remember this"}}'` }] }] } }),
+  })
+  const ctx = fakeCtx()
+  createPlugin({ root }).apply(ctx, {})
+  const agent = fakeAgent()
+  const decision = await ctx.listeners['tools/post-execute'][0](
+    { name: 'read', arguments: { file_path: '/tmp/a.txt' }, callId: 'c1', agent },
+    { isError: false, content: [{ type: 'text', text: 'file body' }] },
+    async () => ({ kind: 'accept' }),
+  )
+  assert.equal(decision.kind, 'accept')
+  assert.equal(decision.additionalContexts.length, 1)
+  assert.match(decision.additionalContexts[0].content[0].text, /remember this/)
+  assert.equal(agent.injected.length, 0)
+  const input = JSON.parse(readFileSync(join(root, 'read-input.json'), 'utf8'))
+  assert.deepEqual(input.tool_response, { type: 'text', file: { filePath: '/tmp/a.txt', content: 'file body' } })
+})
+
+
+test('tool_response follows Claude Code shapes per tool', () => {
+  const content = [{ type: 'text', text: 'body' }]
+  assert.deepEqual(toClaudeToolResponse('bash', { command: 'ls' }, { isError: false, content }), {
+    stdout: 'body',
+    stderr: '',
+    interrupted: false,
+    isImage: false,
+  })
+  assert.deepEqual(toClaudeToolResponse('write', { file_path: '/a', content: 'x' }, { isError: false, content }), {
+    type: 'update',
+    filePath: '/a',
+    content: 'x',
+    originalFile: null,
+  })
+  assert.deepEqual(toClaudeToolResponse('edit', { file_path: '/a', old_string: 'x', new_string: 'y' }, { isError: false, content }), {
+    filePath: '/a',
+    oldString: 'x',
+    newString: 'y',
+  })
+  assert.deepEqual(toClaudeToolResponse('glob', {}, { isError: false, content: [{ type: 'text', text: 'a\nb\n' }] }), {
+    filenames: ['a', 'b'],
+    durationMs: 0,
+    numFiles: 2,
+    truncated: false,
+  })
 })
