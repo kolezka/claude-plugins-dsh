@@ -126,21 +126,21 @@ bun x claude-plugin-dsh sync --check plugin-a plugin-b
 ## Development
 
 ```sh
-pnpm install --frozen-lockfile
-pnpm run typecheck
-pnpm test
-pnpm pack
+bun install --frozen-lockfile
+bun run typecheck
+bun run test
+bun pm pack
 ```
 
-`pnpm run build` compiles the typed modules and CLI, emits declarations, and bundles
+`bun run build` compiles the typed modules and CLI, emits declarations, and bundles
 `dist/claude-compat.js` for existing adapters. Generated files are not committed.
-Tests run against the compiled runtime and CLI. `prepack` builds before packaging.
+`bun run test` runs the Node compatibility suite against the compiled runtime and CLI.
+`prepack` builds before packaging.
 
 Publishing requires npm access to the `claude-plugin-dsh` package:
 
 ```sh
-npm login
-npm publish --access public
+bun publish
 ```
 
 `prepublishOnly` runs type checking and tests before publication. Do not put registry tokens

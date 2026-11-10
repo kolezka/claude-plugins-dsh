@@ -22,9 +22,9 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json && esbuild src/claude-compat.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/claude-compat.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "pnpm run build && node --test test/*.test.mjs",
-    "prepack": "pnpm run build",
-    "prepublishOnly": "pnpm run typecheck && pnpm test"
+    "test": "bun run build && node --test test/*.test.mjs",
+    "prepack": "bun run build",
+    "prepublishOnly": "bun run typecheck && bun run test"
   },
   "engines": {
     "node": ">=20"
@@ -47,7 +47,7 @@
   "publishConfig": {
     "access": "public"
   },
-  "packageManager": "pnpm@12.16.1",
+  "packageManager": "bun@1.4.4",
   "devDependencies": {
     "@types/node": "^26.6.6",
     "esbuild": "0.28.2",
