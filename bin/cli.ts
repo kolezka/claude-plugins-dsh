@@ -3,7 +3,7 @@ import { inspect } from './inspect.js'
 import { scaffold } from './scaffold.js'
 import { sync } from './sync.js'
 
-const usage = `Usage: claude-plugins-dsh <command> [options] <plugin-dir>...
+const usage = `Usage: claude-plugin-dsh <command> [options] <plugin-dir>...
 
 Commands:
   scaffold [--scope @you] <plugin-dir>...  Generate manifest, locale and runtime
