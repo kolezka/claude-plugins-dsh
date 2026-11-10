@@ -15,10 +15,10 @@ with no runtime dependencies. Node 20 or newer; hooks require a POSIX shell.
 Install the package:
 
 ```sh
-pnpm add claude-plugin-dsh
+bun add claude-plugin-dsh
 ```
 
-`bun x claude-plugin-dsh` (or `pnpm dlx claude-plugin-dsh`) runs the CLI without installing it.
+`bun x claude-plugin-dsh` runs the CLI without installing it.
 The old `claude-plugins-dsh` command name still works as an alias.
 
 Adapters may import `createPlugin` and `rootFrom` directly, or vendor the built runtime as
@@ -136,7 +136,7 @@ pnpm pack
 `dist/claude-compat.js` for existing adapters. Generated files are not committed.
 Tests run against the compiled runtime and CLI. `prepack` builds before packaging.
 
-Publishing requires npm access to the `kolezka` scope:
+Publishing requires npm access to the `claude-plugin-dsh` package:
 
 ```sh
 npm login
