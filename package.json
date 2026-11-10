@@ -1,5 +1,5 @@
 {
-  "name": "@kolezka/claude-plugins-dsh",
+  "name": "claude-plugin-dsh",
   "version": "0.1.0",
   "description": "Run unmodified Claude Code plugins inside DeepSeek Harness (DSH)",
   "type": "module",
@@ -11,6 +11,7 @@
     "./package.json": "./package.json"
   },
   "bin": {
+    "claude-plugin-dsh": "dist/bin/cli.js",
     "claude-plugins-dsh": "dist/bin/cli.js"
   },
   "files": [

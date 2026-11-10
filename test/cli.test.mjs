@@ -34,7 +34,7 @@ test('help exits successfully and malformed commands fail', () => {
   for (const args of [['-h'], ['--help'], ['scaffold', '--help'], ['inspect', '-h'], ['sync', '--help']]) {
     const result = run(args)
     assert.equal(result.status, 0, result.stderr)
-    assert.match(result.stdout, /Usage: claude-plugins-dsh/)
+    assert.match(result.stdout, /Usage: claude-plugin-dsh /)
   }
   for (const args of [[], ['wat'], ['scaffold'], ['inspect'], ['sync'], ['inspect', '--check', '.'], ['sync', '--wat', '.']]) {
     const result = run(args)
@@ -162,4 +162,11 @@ test('CLI runtime resolution survives relocation outside the checkout', (t) => {
   const result = run(['scaffold', root], resolve(installed, 'dist/bin/cli.js'))
   assert.equal(result.status, 0, result.stderr)
   assert.deepEqual(readFileSync(join(root, 'dsh/claude-compat.js')), readFileSync(runtime))
+})
+
+test('package exposes the CLI under the new and legacy bin names', () => {
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+  assert.equal(pkg.name, 'claude-plugin-dsh')
+  assert.deepEqual(pkg.bin, { 'claude-plugin-dsh': 'dist/bin/cli.js', 'claude-plugins-dsh': 'dist/bin/cli.js' })
+  assert.match(readFileSync(join(dist, '..', pkg.bin['claude-plugin-dsh']), 'utf8'), /^#!\/usr\/bin\/env node\n/)
 })

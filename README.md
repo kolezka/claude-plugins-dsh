@@ -1,4 +1,4 @@
-# @kolezka/claude-plugins-dsh
+# claude-plugin-dsh
 
 Run an unmodified [Claude Code](https://docs.claude.com/en/docs/claude-code) plugin inside
 [DeepSeek Harness](https://github.com/deepseek-ai) (DSH).
@@ -15,10 +15,11 @@ with no runtime dependencies. Node 20 or newer; hooks require a POSIX shell.
 Install the package:
 
 ```sh
-pnpm add @kolezka/claude-plugins-dsh
+bun add claude-plugin-dsh
 ```
 
-`pnpm dlx @kolezka/claude-plugins-dsh` runs the CLI without installing it.
+`bun x claude-plugin-dsh` runs the CLI without installing it.
+The old `claude-plugins-dsh` command name still works as an alias.
 
 Adapters may import `createPlugin` and `rootFrom` directly, or vendor the built runtime as
 shown below. Direct imports receive types; vendored copies stay self-contained and must be
@@ -58,7 +59,7 @@ servers, and per-agent model pins.
 ## Add it to a plugin
 
 ```sh
-pnpm dlx @kolezka/claude-plugins-dsh scaffold --scope @you /path/to/plugin
+bun x claude-plugin-dsh scaffold --scope @you /path/to/plugin
 ```
 
 `scaffold` writes `dsh/package.json` (package `@you/<plugin>-dsh`, or `<plugin>-dsh` without
@@ -94,7 +95,7 @@ export default plugin
 Check what it registers without starting DSH:
 
 ```sh
-pnpm dlx @kolezka/claude-plugins-dsh inspect /path/to/plugin
+bun x claude-plugin-dsh inspect /path/to/plugin
 ```
 
 ## Install into DSH
@@ -118,8 +119,8 @@ A row config can turn parts off: `config: { disable: [hooks] }`.
 ## Keeping vendored copies current
 
 ```sh
-pnpm dlx @kolezka/claude-plugins-dsh sync plugin-a plugin-b
-pnpm dlx @kolezka/claude-plugins-dsh sync --check plugin-a plugin-b
+bun x claude-plugin-dsh sync plugin-a plugin-b
+bun x claude-plugin-dsh sync --check plugin-a plugin-b
 ```
 
 ## Development
@@ -135,7 +136,7 @@ pnpm pack
 `dist/claude-compat.js` for existing adapters. Generated files are not committed.
 Tests run against the compiled runtime and CLI. `prepack` builds before packaging.
 
-Publishing requires npm access to the `kolezka` scope:
+Publishing requires npm access to the `claude-plugin-dsh` package:
 
 ```sh
 npm login
