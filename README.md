@@ -133,6 +133,9 @@ tracked `dsh/` directory, and rewrites the `# <dir> <branch> <hash>` comment abo
 checkout's row in the patch file. That comment is a note for people; DSH loads the checkout
 as it is on disk. A dirty working tree stops the update for that checkout.
 
+Private HTTPS remotes fetch with your `gh auth login` session when `gh` is on `PATH`. It is
+tried after any credential helper you configured. SSH remotes use your SSH keys as usual.
+
 When the remote history was rewritten and the branch cannot be fast-forwarded, `update`
 refuses and prints the undo command. `--reset` moves the branch onto the upstream with
 `git reset --hard` instead; local commits that are not upstream are dropped from the branch

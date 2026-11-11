@@ -26,6 +26,20 @@ function git(root: string, ...args: string[]): { ok: boolean; out: string; err: 
   return { ok: result.status === 0, out: result.stdout.trim(), err: result.stderr.trim() }
 }
 
+let ghCredentialArgs: string[] | undefined
+
+/**
+ * Lets fetch use the `gh auth login` session. Added after the user's own helpers, so it is only a fallback,
+ * and gh answers nothing for hosts it is not logged in to.
+ */
+function credentialArgs(): string[] {
+  if (ghCredentialArgs === undefined) {
+    const probe = spawnSync('gh', ['--version'], { stdio: 'ignore' })
+    ghCredentialArgs = probe.error || probe.status !== 0 ? [] : ['-c', 'credential.helper=!gh auth git-credential']
+  }
+  return ghCredentialArgs
+}
+
 function short(hash: string): string {
   return hash.slice(0, 7)
 }
@@ -145,8 +159,11 @@ function updateOne(checkout: Checkout, options: UpdateOptions, patchFile: string
   const { root, name, upstream } = checkout
   const label = `${name}:`
   const remote = upstream.split('/')[0] ?? 'origin'
-  const fetch = git(root, 'fetch', '--quiet', remote)
-  if (!fetch.ok) throw new Error(`${label} git fetch ${remote} failed\n${fetch.err}`)
+  const fetch = git(root, ...credentialArgs(), 'fetch', '--quiet', remote)
+  if (!fetch.ok) {
+    const hint = credentialArgs().length ? '' : '\n(gh not found: install it and run gh auth login, or configure a git credential helper)'
+    throw new Error(`${label} git fetch ${remote} failed\n${fetch.err}${hint}`)
+  }
 
   const dirty = git(root, 'status', '--porcelain', '--untracked-files=no')
   if (dirty.out) throw new Error(`${label} working tree has uncommitted changes, commit or stash them first`)

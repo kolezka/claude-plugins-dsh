@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
-import { spawnSync } from 'node:child_process'
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { spawn, spawnSync } from 'node:child_process'
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 
@@ -281,4 +281,39 @@ test('update discovers checkouts under $DSH_HOME/plugins-src, honours --patch, a
   const empty = spawnSync(process.execPath, [cli, 'update'], { encoding: 'utf8', env: { ...process.env, DSH_HOME: join(home, 'missing') } })
   assert.equal(empty.status, 64)
   assert.match(empty.stderr, /found no checkouts/)
+})
+
+test('update fetches over HTTPS-style auth with the gh login when no other credential helper has one', async (t) => {
+  const { temporary, origin, seed, root, home, commit } = checkoutFixture(t)
+  const server = spawn(process.execPath, [join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'auth-git-server.mjs'), temporary, 'x-access-token', 'gh-secret'])
+  t.after(() => server.kill())
+  const port = await new Promise((resolvePort, reject) => {
+    server.stdout.once('data', (chunk) => resolvePort(chunk.toString().trim()))
+    server.once('exit', (code) => reject(new Error(`server exited ${code}`)))
+  })
+  git(root, 'remote', 'set-url', 'origin', `http://127.0.0.1:${port}/${basename(origin)}`)
+  const second = commit(seed, '0.2.0')
+  git(seed, 'push', '-q')
+
+  // A fake gh that knows the password, so success proves update asked gh and not some other helper.
+  const bin = join(temporary, 'bin')
+  mkdirSync(bin)
+  writeFileSync(join(bin, 'gh'), '#!/bin/sh\nif [ "$1 $2 $3" = "auth git-credential get" ]; then cat >/dev/null; printf "username=x-access-token\\npassword=gh-secret\\n"; fi\nexit 0\n')
+  chmodSync(join(bin, 'gh'), 0o755)
+  const isolated = { ...process.env, DSH_HOME: home, GIT_CONFIG_GLOBAL: join(temporary, 'empty-gitconfig'), GIT_CONFIG_NOSYSTEM: '1', GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: '', SSH_ASKPASS: '' }
+  writeFileSync(isolated.GIT_CONFIG_GLOBAL, '')
+  const runWith = (path) => spawnSync(process.execPath, [cli, 'update'], { encoding: 'utf8', env: { ...isolated, PATH: path } })
+
+  // Control: without gh on PATH the same fetch must fail on auth, so the fixture really requires credentials.
+  const systemPath = (process.env.PATH ?? '').split(':').filter((entry) => !existsSync(join(entry, 'gh'))).join(':')
+  let result = runWith(systemPath)
+  assert.equal(result.status, 1, result.stdout)
+  assert.match(result.stderr, /git fetch origin failed/)
+  assert.match(result.stderr, /gh not found/)
+  assert.notEqual(git(root, 'rev-parse', 'HEAD'), second)
+
+  result = runWith(`${bin}:${systemPath}`)
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(result.stdout, /\(0\.1\.0 -> 0\.2\.0\)/)
+  assert.equal(git(root, 'rev-parse', 'HEAD'), second)
 })
