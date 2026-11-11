@@ -116,6 +116,30 @@ Or for every profile, add a row to `~/.dsh/cordis.patch.yml`. DSH picks it up wi
 
 A row config can turn parts off: `config: { disable: [hooks] }`.
 
+## Updating installed plugins
+
+When adapters are loaded from git checkouts under `$DSH_HOME/plugins-src` (one row per
+checkout in `~/.dsh/cordis.patch.yml`), `update` brings them to their upstream branch:
+
+```sh
+bun x claude-plugin-dsh update                  # every checkout under $DSH_HOME/plugins-src
+bun x claude-plugin-dsh update --check          # report what is behind, write nothing, exit 1 if any
+bun x claude-plugin-dsh update ~/.dsh/plugins-src/design-studio
+```
+
+For each checkout it fetches, fast-forwards the current branch onto its tracking ref
+(`origin/<branch>` when none is configured), runs `bun install --frozen-lockfile` in every
+tracked `dsh/` directory, and rewrites the `# <dir> <branch> <hash>` comment above the
+checkout's row in the patch file. That comment is a note for people; DSH loads the checkout
+as it is on disk. A dirty working tree stops the update for that checkout.
+
+When the remote history was rewritten and the branch cannot be fast-forwarded, `update`
+refuses and prints the undo command. `--reset` moves the branch onto the upstream with
+`git reset --hard` instead; local commits that are not upstream are dropped from the branch
+but stay in the reflog. `--patch <file>` rewrites pins in a different file.
+
+Restart DSH afterwards so it loads the new version.
+
 ## Keeping vendored copies current
 
 ```sh
