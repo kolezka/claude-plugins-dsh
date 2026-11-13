@@ -13,6 +13,7 @@ Commands:
   update [--check] [--reset] [--patch <file>] [<checkout-dir>...]
                                         Pull adapter checkouts, install their dsh/ dependencies and
                                         refresh the pin comments in cordis.patch.yml. Without directories,
+                                        every checkout behind a file:// adapter row in the patch file and
                                         every checkout under $DSH_HOME/plugins-src is updated.
 
 Options:
@@ -69,8 +70,10 @@ async function main(args: readonly string[]): Promise<number> {
   }
   if (command === 'update') {
     if (check && reset) throw new UsageError('--check and --reset cannot be combined')
-    const targets = directories.length ? directories : discoverCheckouts()
-    if (!targets.length) throw new UsageError('update found no checkouts under $DSH_HOME/plugins-src; pass directories explicitly')
+    const targets = directories.length ? directories : discoverCheckouts(process.env, patch)
+    if (!targets.length) {
+      throw new UsageError('update found no checkouts in the patch file or under $DSH_HOME/plugins-src; pass directories explicitly')
+    }
     return update(targets, { check, reset, patch })
   }
   if (!directories.length) throw new UsageError(`${command} requires at least one plugin directory`)

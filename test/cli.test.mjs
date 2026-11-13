@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -281,6 +281,58 @@ test('update discovers checkouts under $DSH_HOME/plugins-src, honours --patch, a
   const empty = spawnSync(process.execPath, [cli, 'update'], { encoding: 'utf8', env: { ...process.env, DSH_HOME: join(home, 'missing') } })
   assert.equal(empty.status, 64)
   assert.match(empty.stderr, /found no checkouts/)
+})
+
+test('update without directories also finds checkouts behind file:// adapter rows outside plugins-src', (t) => {
+  const { temporary, origin, seed, root, home, patch, first, commit, runUpdate } = checkoutFixture(t)
+  // The same plugin cloned where a developer keeps it, loaded through the patch file, not plugins-src.
+  const developed = join(temporary, 'Development', 'dev-plugin')
+  git(temporary, 'clone', '-q', origin, developed)
+  // A non-adapter row pointing into a git checkout (a plugin's own dist build) must be left alone.
+  const foreign = join(temporary, 'foreign')
+  git(temporary, 'clone', '-q', origin, foreign)
+  mkdirSync(join(foreign, 'dist'))
+  writeFileSync(join(foreign, 'dist', 'dsh.js'), '// built\n')
+  writeFileSync(patch, `${readFileSync(patch, 'utf8')}# dev-plugin main ${first}\n- insert:\n    - id: claude-compat-dev-plugin\n      name: "file://${developed}/dsh/index.js"\n- insert:\n    - id: foreign\n      name: "file://${foreign}/dist/dsh.js"\n`)
+  const second = commit(seed, '0.2.0')
+  git(seed, 'push', '-q')
+
+  const result = runUpdate()
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(git(developed, 'rev-parse', 'HEAD'), second, 'the patch-referenced checkout is pulled')
+  assert.equal(git(root, 'rev-parse', 'HEAD'), second, 'plugins-src checkouts are still pulled')
+  assert.equal(git(foreign, 'rev-parse', 'HEAD'), first, 'a non-adapter file:// row is not pulled')
+  assert.equal(result.stdout.match(/^fixture-plugin:/gm)?.length, 1, 'a checkout in plugins-src and in the patch is updated once')
+  assert.match(readFileSync(patch, 'utf8'), new RegExp(`# dev-plugin main ${second}\n- insert:\n    - id: claude-compat-dev-plugin`))
+  assert.match(readFileSync(patch, 'utf8'), new RegExp(`# fixture-plugin main ${second}`))
+
+  rmSync(join(home, 'plugins-src'), { recursive: true })
+  const only = runUpdate('--check')
+  assert.equal(only.status, 0, only.stderr)
+  assert.match(only.stdout, /^dev-plugin: up to date/m, 'the patch alone is enough to find a checkout')
+})
+
+test('update installs adapter dependencies in an up-to-date checkout, but not with --check', (t) => {
+  const { temporary, seed, root, home, commit } = checkoutFixture(t)
+  commit(seed, '0.2.0', { 'dsh/bun.lock': '{}\n' })
+  git(seed, 'push', '-q')
+  git(root, 'pull', '-q', '--ff-only')
+  // A stand-in bun that records where it ran, so the test needs no network or real install.
+  const bin = join(temporary, 'bin')
+  const log = join(temporary, 'bun.log')
+  mkdirSync(bin)
+  writeFileSync(join(bin, 'bun'), `#!/bin/sh\necho "$PWD $*" >> '${log}'\n`, { mode: 0o755 })
+  const env = { ...process.env, DSH_HOME: home, PATH: `${bin}:${process.env.PATH}` }
+  const run = (...args) => spawnSync(process.execPath, [cli, 'update', ...args], { encoding: 'utf8', env })
+
+  let result = run('--check')
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(existsSync(log), false, '--check must not install')
+  result = run()
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(result.stdout, /fixture-plugin: up to date/)
+  assert.equal(existsSync(log), true, 'an up-to-date checkout still gets bun install')
+  assert.equal(readFileSync(log, 'utf8'), `${realpathSync(join(root, 'dsh'))} install --frozen-lockfile\n`)
 })
 
 test('update fetches over HTTPS-style auth with the gh login when no other credential helper has one', async (t) => {
