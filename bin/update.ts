@@ -56,14 +56,48 @@ export function defaultPatchFile(env: NodeJS.ProcessEnv = process.env): string {
   return join(dshHome(env), 'cordis.patch.yml')
 }
 
-/** Every git checkout directly under $DSH_HOME/plugins-src. */
-export function discoverCheckouts(env: NodeJS.ProcessEnv = process.env): string[] {
+/** The nearest ancestor of `start` holding a .git entry, keeping the path as written. */
+function checkoutRootOf(start: string): string | undefined {
+  for (let dir = start; ; dir = dirname(dir)) {
+    if (existsSync(join(dir, '.git'))) return dir
+    if (dirname(dir) === dir) return undefined
+  }
+}
+
+/** Checkouts behind the patch file's `file://.../dsh/<entry>` adapter rows, wherever they live. */
+function checkoutsFromPatch(patchFile: string): string[] {
+  if (!existsSync(patchFile)) return []
+  const roots: string[] = []
+  for (const match of readFileSync(patchFile, 'utf8').matchAll(/file:\/\/(\/[^"'\s]+)/g)) {
+    const entry = match[1]
+    // Only adapter bundles; other file:// rows (a plugin's own dist build) are not ours to pull.
+    if (entry === undefined || basename(dirname(entry)) !== 'dsh' || !existsSync(entry)) continue
+    const root = checkoutRootOf(dirname(entry))
+    if (root) roots.push(root)
+  }
+  return roots
+}
+
+/**
+ * Every checkout DSH loads an adapter from: the patch file's `file://` adapter rows plus every git
+ * checkout directly under $DSH_HOME/plugins-src. A checkout reached both ways is listed once.
+ */
+export function discoverCheckouts(env: NodeJS.ProcessEnv = process.env, patchFile = defaultPatchFile(env)): string[] {
   const source = join(dshHome(env), 'plugins-src')
-  if (!existsSync(source)) return []
-  return readdirSync(source, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory() && existsSync(join(source, entry.name, '.git')))
-    .map((entry) => join(source, entry.name))
-    .sort()
+  const fromSource = existsSync(source)
+    ? readdirSync(source, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory() && existsSync(join(source, entry.name, '.git')))
+        .map((entry) => join(source, entry.name))
+    : []
+  const seen = new Set<string>()
+  const roots: string[] = []
+  for (const root of [...checkoutsFromPatch(patchFile), ...fromSource]) {
+    const key = realpathSync(root)
+    if (seen.has(key)) continue
+    seen.add(key)
+    roots.push(root)
+  }
+  return roots.sort()
 }
 
 /** The plugin version from .claude-plugin/plugin.json at the checkout root, if any. */
@@ -175,6 +209,8 @@ function updateOne(checkout: Checkout, options: UpdateOptions, patchFile: string
   const noPin = `, no pin comment in ${patchFile}`
 
   if (before === target.out) {
+    // A fresh clone or a manual pull is up to date but may lack the adapter's dependencies.
+    if (!options.check) installAdapterDependencies(root)
     const pinned = rewritePin(patchFile, checkout, before, !options.check)
     console.log(`${label} up to date at ${short(before)}${versionBefore ? ` (${versionBefore})` : ''}${pinned ? '' : noPin}`)
     return true
