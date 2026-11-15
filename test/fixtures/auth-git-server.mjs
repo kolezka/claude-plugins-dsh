@@ -49,4 +49,5 @@ const server = createServer((request, response) => {
   })
   backend.on('close', () => response.end())
 })
-server.listen(0, '127.0.0.1', () => console.log(server.address().port))
+// Write a plain string: console.log colors numbers under FORCE_COLOR, which corrupts the URL.
+server.listen(0, '127.0.0.1', () => process.stdout.write(`${server.address().port}\n`))
