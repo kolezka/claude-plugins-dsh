@@ -343,6 +343,7 @@ test('update fetches over HTTPS-style auth with the gh login when no other crede
     server.stdout.once('data', (chunk) => resolvePort(chunk.toString().trim()))
     server.once('exit', (code) => reject(new Error(`server exited ${code}`)))
   })
+  assert.match(port, /^\d+$/, 'the fixture must print a bare port, with no color codes')
   git(root, 'remote', 'set-url', 'origin', `http://127.0.0.1:${port}/${basename(origin)}`)
   const second = commit(seed, '0.2.0')
   git(seed, 'push', '-q')
