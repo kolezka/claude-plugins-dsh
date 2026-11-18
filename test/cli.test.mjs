@@ -212,6 +212,17 @@ function checkoutFixture(t, name = 'fixture-plugin') {
   return { temporary, origin, seed, root, home, patch, first, commit, runUpdate }
 }
 
+test('update preserves local commits when checkout is ahead, not behind', (t) => {
+  const { root, commit, runUpdate } = checkoutFixture(t)
+  const local = commit(root, '0.2.0')
+  for (const args of [['--check'], [], ['--reset']]) {
+    const result = runUpdate(...args)
+    assert.equal(result.status, 0, result.stderr)
+    assert.match(result.stdout, /ahead.*1 commit/)
+    assert.equal(git(root, 'rev-parse', 'HEAD'), local)
+  }
+})
+
 test('update fast-forwards, installs adapter deps only when a lockfile exists, and rewrites the pin', (t) => {
   const { seed, root, patch, first, commit, runUpdate } = checkoutFixture(t)
   let result = runUpdate()

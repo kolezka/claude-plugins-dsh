@@ -1,4 +1,5 @@
 // createPlugin: one Claude Code plugin tree -> one DSH (Cordis) plugin.
+import packageMetadata from '../package.json' with { type: 'json' }
 import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
@@ -26,7 +27,7 @@ import {
 } from './plugin-files.js'
 import { claudeToolName, dropTranscript, lastAssistantText, parseArguments, syncTranscript, textOf, toClaudeToolInput, toClaudeToolResponse, transcriptPath } from './transcript.js'
 
-export const COMPAT_VERSION = '0.1.0'
+export const COMPAT_VERSION = packageMetadata.version
 export const SKILL_RANK = 450
 
 export type Part = 'skills' | 'commands' | 'agents' | 'instructions' | 'hooks'
@@ -248,6 +249,8 @@ export function createPlugin(spec: PluginSpec): DshPlugin {
     const hooks = readHooks(root).filter((hook) => !only || only.has(hook.event))
     if (!hooks.length) return
     const byEvent = (event: string): HookSpec[] => hooks.filter((hook) => hook.event === event)
+    // Separate copies of the runtime must not append to or delete another plugin's export.
+    const transcriptOwner = randomUUID()
     const stopBlocks = new WeakMap<Agent, boolean>()
     const tag = `${pluginName}-hook`
     let workingDirectory: HostContext['workingDirectory']
@@ -273,9 +276,9 @@ export function createPlugin(spec: PluginSpec): DshPlugin {
     }
 
     const inputFor = (agent: Agent, event: string, cwd: string, extra: Record<string, unknown> = {}): Record<string, unknown> & { cwd: string } => {
-      let transcript = transcriptPath(agent)
+      let transcript = transcriptPath(agent, transcriptOwner)
       try {
-        transcript = syncTranscript(agent, cwd)
+        transcript = syncTranscript(agent, cwd, transcriptOwner)
       } catch (error) {
         warn(`transcript export failed: ${(error as Error).message}`)
       }
@@ -423,10 +426,12 @@ export function createPlugin(spec: PluginSpec): DshPlugin {
         const contexts = text ? [hookMessage('PostToolUse', text)] : []
         const blocked = results.find((r) => r.decision === 'block' || r.decision === 'deny')
         if (blocked) {
+          const additionalContexts = [...(decision.additionalContexts ?? []), ...contexts]
           return {
             kind: 'block',
-            feedback: [{ type: 'text', text: blocked.reason || `blocked by ${pluginName} hook` }],
-            ...(contexts.length ? { additionalContexts: contexts } : {}),
+            feedback: [...(decision.kind === 'block' ? decision.feedback : []), { type: 'text', text: blocked.reason || `blocked by ${pluginName} hook` }],
+            ...(decision.kind === 'block' && decision.info !== undefined ? { info: decision.info } : {}),
+            ...(additionalContexts.length ? { additionalContexts } : {}),
           }
         }
         if (!contexts.length) return decision
@@ -465,7 +470,7 @@ export function createPlugin(spec: PluginSpec): DshPlugin {
         })
         .finally(() => {
           try {
-            dropTranscript(agent)
+            dropTranscript(agent, transcriptOwner)
           } catch {
             // Best effort: a leftover export is only disk space.
           }

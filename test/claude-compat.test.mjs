@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import {
+  COMPAT_VERSION,
   createPlugin,
   interpretHookResult,
   matcherMatches,
@@ -72,11 +73,87 @@ function fakeAgent(events = [], header = {}) {
 const userMsg = (text) => ({ id: 'u', role: 'user', content: [{ type: 'text', text }], source: { kind: 'user' } })
 const live = () => new AbortController().signal
 
+test('runtime version matches the package and hook environment', async () => {
+  const version = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version
+  assert.equal(COMPAT_VERSION, version)
+  const root = fixture({
+    '.claude-plugin/plugin.json': '{"name":"version"}',
+    'hooks/hooks.json': JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: 'command', command: 'printf "%s" "$DSH_CLAUDE_COMPAT"' }] }] } }),
+  })
+  const ctx = fakeCtx()
+  createPlugin({ root }).apply(ctx)
+  const agent = fakeAgent()
+  await ctx.listeners['agent/created'][0]({ agent, source: 'startup', signal: live() })
+  assert.match(agent.injected[0].content[0].text, new RegExp(version.replaceAll('.', '\\.')))
+})
+
+test('already cancelled hooks do not start a process', async () => {
+  const root = fixture({})
+  const controller = new AbortController()
+  controller.abort()
+  const result = await runHook({ command: 'printf started > marker', timeout: 0.1 }, { cwd: root }, process.env, controller.signal)
+  assert.equal(result.aborted, true)
+  assert.equal(existsSync(join(root, 'marker')), false)
+})
+
+test('PostToolUse block preserves downstream context and structured identity', async () => {
+  const root = fixture({
+    '.claude-plugin/plugin.json': '{"name":"post-context"}',
+    'hooks/hooks.json': JSON.stringify({ hooks: { PostToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'cat >/dev/null; echo blocked >&2; exit 2' }] }] } }),
+  })
+  const ctx = fakeCtx()
+  createPlugin({ root }).apply(ctx)
+  const context = userMsg('downstream context')
+  const info = { code: 'DOWNSTREAM_POLICY' }
+  const result = await ctx.listeners['tools/post-execute'][0](
+    { name: 'bash', arguments: {}, callId: 'c', agent: fakeAgent(), signal: live() },
+    { isError: false, content: [] },
+    async () => ({ kind: 'block', feedback: [{ type: 'text', text: 'downstream block' }], info, additionalContexts: [context] }),
+  )
+  assert.deepEqual(result.additionalContexts, [context])
+  assert.deepEqual(result.info, info)
+  assert.deepEqual(result.feedback, [{ type: 'text', text: 'downstream block' }, { type: 'text', text: 'blocked' }])
+})
+
+test('plugins keep independent transcript files through session disposal', async () => {
+  const contexts = ['alpha', 'beta'].map((name) => {
+    const root = fixture({
+      '.claude-plugin/plugin.json': JSON.stringify({ name }),
+      'hooks/hooks.json': JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: 'command', command: 'cat > "$CLAUDE_PLUGIN_ROOT/input.json"' }] }] } }),
+    })
+    const ctx = fakeCtx()
+    createPlugin({ root }).apply(ctx)
+    return { root, ctx }
+  })
+  const agent = fakeAgent([{ type: 'user/message', data: userMsg('original') }])
+  for (const { ctx } of contexts) await ctx.listeners['agent/created'][0]({ agent, source: 'startup', signal: live() })
+  const paths = contexts.map(({ root }) => JSON.parse(readFileSync(join(root, 'input.json'), 'utf8')).transcript_path)
+  assert.notEqual(paths[0], paths[1])
+  for (const path of paths) assert.equal(JSON.parse(readFileSync(path, 'utf8')).message.content, 'original')
+  contexts[0].ctx.listeners['agent/disposed'][0]({ agent })
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(existsSync(paths[0]), false)
+  assert.equal(existsSync(paths[1]), true)
+  contexts[1].ctx.listeners['agent/disposed'][0]({ agent })
+})
+
 test('front matter: quoted values and plain values', () => {
   const { meta, body } = parseFrontMatter('---\nname: x\ndescription: "a: \\"b\\""\n---\nhello')
   assert.equal(meta.name, 'x')
   assert.equal(meta.description, 'a: "b"')
   assert.equal(body, 'hello')
+})
+
+test('empty front matter preserves command body including horizontal rules', async () => {
+  const body = 'Intro text\n\n---\n\nrest'
+  assert.deepEqual(parseFrontMatter('---\n---\n' + body), { meta: {}, body })
+  const root = fixture({ '.claude-plugin/plugin.json': '{"name":"empty"}', 'commands/demo.md': '---\n---\n' + body })
+  const ctx = fakeCtx()
+  createPlugin({ root }).apply(ctx)
+  const agent = fakeAgent()
+  await ctx.commandDefs[0].handler({ agent, rawInput: '' })
+  assert.ok(agent.followups[0].content[0].text.endsWith(body))
+  assert.deepEqual(parseFrontMatter('headerless\n---\nbody'), { meta: {}, body: 'headerless\n---\nbody' })
 })
 
 test('claude-only blocks are removed, the rest stays', () => {

@@ -48,6 +48,7 @@ export interface HookOutcome {
  * the result is taken at process exit, not when every inherited stdout handle closes.
  */
 export function runHook(hook: Pick<HookSpec, 'command'> & { args?: string[] | undefined; timeout?: number }, input: { cwd?: string } & Record<string, unknown>, env: Record<string, string | undefined>, signal?: AbortSignal): Promise<HookRunResult> {
+  if (signal?.aborted) return Promise.resolve({ code: null, stdout: '', stderr: 'hook cancelled', timedOut: false, truncated: false, aborted: true })
   return new Promise((resolvePromise) => {
     let stdout = ''
     let stderr = ''
