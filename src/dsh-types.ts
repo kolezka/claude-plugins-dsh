@@ -82,7 +82,7 @@ export interface ToolExecutionResult {
 export type PostToolDecision =
   | { kind: 'accept'; content?: ContentBlock[]; value?: never; additionalContexts?: UserMessage[] }
   | { kind: 'accept'; value: unknown; content?: never; additionalContexts?: UserMessage[] }
-  | { kind: 'block'; feedback: ContentBlock[]; additionalContexts?: UserMessage[] }
+  | { kind: 'block'; feedback: ContentBlock[]; info?: unknown; additionalContexts?: UserMessage[] }
 
 export type SkillSource = 'custom' | (string & {})
 

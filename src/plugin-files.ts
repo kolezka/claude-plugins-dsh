@@ -72,7 +72,7 @@ export interface AgentOptions {
 
 /** Split YAML-ish front matter from a markdown file. Only flat `key: value` lines are read. */
 export function parseFrontMatter(text: string): { meta: FrontMatter; body: string } {
-  const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(text)
+  const match = /^---\r?\n(?:([\s\S]*?)\r?\n)??---[ \t]*(?:\r?\n|$)/.exec(text)
   if (!match) return { meta: {}, body: text }
   const meta: FrontMatter = {}
   for (const line of (match[1] ?? '').split(/\r?\n/)) {

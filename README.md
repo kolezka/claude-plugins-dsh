@@ -138,7 +138,9 @@ For each checkout it fetches, fast-forwards the current branch onto its tracking
 tracked `dsh/` directory (also when the checkout was already up to date, so a fresh clone gets
 its dependencies), and rewrites the `# <dir> <branch> <hash>` comment above the
 checkout's row in the patch file. That comment is a note for people; DSH loads the checkout
-as it is on disk. A dirty working tree stops the update for that checkout.
+as it is on disk. A dirty working tree stops the update for that checkout. A checkout
+that is only ahead of upstream keeps its local commits, including with `--reset`;
+it is reported as up to date with the ahead count.
 
 Private HTTPS remotes fetch with your `gh auth login` session when `gh` is on `PATH`. It is
 tried after any credential helper you configured. SSH remotes use your SSH keys as usual.

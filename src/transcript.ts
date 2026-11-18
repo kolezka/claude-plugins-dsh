@@ -181,16 +181,16 @@ function stateHome(): string {
   return join(base, 'state', 'claude-compat')
 }
 
-export function transcriptPath(agent: Agent): string {
-  return join(stateHome(), 'transcripts', `${String(agent.session.header.id).replace(/[^A-Za-z0-9_-]/g, '')}.jsonl`)
+export function transcriptPath(agent: Agent, owner?: string): string {
+  return join(stateHome(), 'transcripts', `${String(agent.session.header.id).replace(/[^A-Za-z0-9_-]/g, '')}${owner ? `-${owner}` : ''}.jsonl`)
 }
 
 // Exported event count per transcript path; the file only ever grows by the new tail.
 const exported = new Map<string, number>()
 
 /** Bring the Claude-shaped transcript up to date by appending events not yet written. */
-export function syncTranscript(agent: Agent, cwd: string): string {
-  const path = transcriptPath(agent)
+export function syncTranscript(agent: Agent, cwd: string, owner?: string): string {
+  const path = transcriptPath(agent, owner)
   const events = sessionEvents(agent.session)
   let done = exported.get(path)
   if (done === undefined || done > events.length || !existsSync(path)) {
@@ -203,8 +203,8 @@ export function syncTranscript(agent: Agent, cwd: string): string {
   return path
 }
 
-export function dropTranscript(agent: Agent): void {
-  const path = transcriptPath(agent)
+export function dropTranscript(agent: Agent, owner?: string): void {
+  const path = transcriptPath(agent, owner)
   exported.delete(path)
   rmSync(path, { force: true })
 }

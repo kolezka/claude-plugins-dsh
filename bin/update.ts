@@ -208,15 +208,17 @@ function updateOne(checkout: Checkout, options: UpdateOptions, patchFile: string
   const versionBefore = pluginVersion(root)
   const noPin = `, no pin comment in ${patchFile}`
 
-  if (before === target.out) {
+  const base = git(root, 'merge-base', before, target.out)
+  const ahead = base.ok && base.out === target.out && before !== target.out
+  if (before === target.out || ahead) {
     // A fresh clone or a manual pull is up to date but may lack the adapter's dependencies.
     if (!options.check) installAdapterDependencies(root)
     const pinned = rewritePin(patchFile, checkout, before, !options.check)
-    console.log(`${label} up to date at ${short(before)}${versionBefore ? ` (${versionBefore})` : ''}${pinned ? '' : noPin}`)
+    const aheadNote = ahead ? `, ahead of ${upstream} by ${git(root, 'rev-list', '--count', `${target.out}..${before}`).out} commit(s)` : ''
+    console.log(`${label} up to date at ${short(before)}${versionBefore ? ` (${versionBefore})` : ''}${aheadNote}${pinned ? '' : noPin}`)
     return true
   }
 
-  const base = git(root, 'merge-base', before, target.out)
   const fastForward = base.ok && base.out === before
   const localOnly = base.ok ? git(root, 'rev-list', '--count', `${target.out}..${before}`).out : ''
 
