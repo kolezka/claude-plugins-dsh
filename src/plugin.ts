@@ -1,7 +1,7 @@
 // createPlugin: one Claude Code plugin tree -> one DSH (Cordis) plugin.
 import packageMetadata from '../package.json' with { type: 'json' }
 import { randomUUID } from 'node:crypto'
-import { existsSync } from 'node:fs'
+import { existsSync, mkdirSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Agent, HostContext, PostToolDecision, PreToolDecision, SkillCandidate, SkillDefinition, SkillProvider, UserMessage } from './dsh-types.js'
@@ -25,7 +25,18 @@ import {
   type HookSpec,
   type SkillOptions,
 } from './plugin-files.js'
-import { claudeToolName, dropTranscript, lastAssistantText, parseArguments, syncTranscript, textOf, toClaudeToolInput, toClaudeToolResponse, transcriptPath } from './transcript.js'
+import {
+  claudeToolName,
+  dropTranscript,
+  lastAssistantText,
+  parseArguments,
+  pluginDataDir,
+  syncTranscript,
+  textOf,
+  toClaudeToolInput,
+  toClaudeToolResponse,
+  transcriptPath,
+} from './transcript.js'
 
 export const COMPAT_VERSION = packageMetadata.version
 export const SKILL_RANK = 450
@@ -42,7 +53,7 @@ export interface PluginSpec {
   agents?: AgentOptions
   /** Limit which Claude hook events run; default all. */
   hooks?: { events?: string[] }
-  /** Extra environment for hooks; values may use `${CLAUDE_PLUGIN_ROOT}`. */
+  /** Extra environment for hooks; values may use `${CLAUDE_PLUGIN_ROOT}` and `${CLAUDE_PLUGIN_DATA}`. */
   env?: Record<string, string>
   /** Parts that stay off unless the row config sets `disable`. */
   disableByDefault?: Part[]
@@ -269,9 +280,14 @@ export function createPlugin(spec: PluginSpec): DshPlugin {
       }
     }
 
+    // Claude Code keeps this directory across plugin updates and creates it on first use.
+    const dataDir = pluginDataDir(pluginName)
     const envFor = (cwd: string): NodeJS.ProcessEnv => {
-      const env: NodeJS.ProcessEnv = { ...process.env, CLAUDE_PLUGIN_ROOT: root, CLAUDE_PROJECT_DIR: cwd, CLAUDE_HARNESS: 'dsh', DSH_CLAUDE_COMPAT: COMPAT_VERSION }
-      for (const [key, value] of Object.entries(spec.env ?? {})) env[key] = expandPluginRoot(String(value), root)
+      mkdirSync(dataDir, { recursive: true })
+      const env: NodeJS.ProcessEnv = { ...process.env, CLAUDE_PLUGIN_ROOT: root, CLAUDE_PLUGIN_DATA: dataDir, CLAUDE_PROJECT_DIR: cwd, CLAUDE_HARNESS: 'dsh', DSH_CLAUDE_COMPAT: COMPAT_VERSION }
+      for (const [key, value] of Object.entries(spec.env ?? {})) {
+        env[key] = expandPluginRoot(String(value), root).replaceAll('${CLAUDE_PLUGIN_DATA}', dataDir).replaceAll('$CLAUDE_PLUGIN_DATA', dataDir)
+      }
       return env
     }
 
@@ -402,29 +418,29 @@ export function createPlugin(spec: PluginSpec): DshPlugin {
       })
     }
 
-    if (byEvent('PostToolUse').length) {
+    // Claude Code runs PostToolUse only after a tool succeeds; a failed call goes to
+    // PostToolUseFailure, which can add context but cannot block a result that already failed.
+    if (byEvent('PostToolUse').length || byEvent('PostToolUseFailure').length) {
       ctx.on('tools/post-execute', async (exec, result, next): Promise<PostToolDecision> => {
         const decision = await next()
         const agent = exec.agent
         if (!agent) return decision
+        const failed = result?.isError === true
+        const event = failed ? 'PostToolUseFailure' : 'PostToolUse'
         const toolName = claudeToolName(exec.name)
         const matches = (hook: HookSpec): boolean => matcherMatches(hook.matcher, toolName)
-        if (!byEvent('PostToolUse').some(matches)) return decision
+        if (!byEvent(event).some(matches)) return decision
         const args = parseArguments(exec.arguments)
-        const results = await fire(
-          'PostToolUse',
-          agent,
-          {
-            tool_name: toolName,
-            tool_input: toClaudeToolInput(exec.name, args),
-            tool_response: toClaudeToolResponse(exec.name, args, result),
-            tool_use_id: String(exec.callId),
-          },
-          { filter: matches, signal: exec.signal },
-        )
-        const text = contextOf(results)
-        const contexts = text ? [hookMessage('PostToolUse', text)] : []
-        const blocked = results.find((r) => r.decision === 'block' || r.decision === 'deny')
+        const base = { tool_name: toolName, tool_input: toClaudeToolInput(exec.name, args), tool_use_id: String(exec.callId) }
+        const extra = failed
+          ? { ...base, error: textOf(result), ...(exec.signal?.aborted ? { is_interrupt: true } : {}) }
+          : { ...base, tool_response: toClaudeToolResponse(exec.name, args, result) }
+        const results = await fire(event, agent, extra, { filter: matches, signal: exec.signal })
+        // Exit 2 from PostToolUseFailure shows stderr to the model, nothing more.
+        const failureNotes = failed ? results.filter((r) => r.decision === 'block' && r.reason).map((r) => r.reason!) : []
+        const text = [contextOf(results), ...failureNotes].filter(Boolean).join('\n\n')
+        const contexts = text ? [hookMessage(event, text)] : []
+        const blocked = failed ? undefined : results.find((r) => r.decision === 'block' || r.decision === 'deny')
         if (blocked) {
           const additionalContexts = [...(decision.additionalContexts ?? []), ...contexts]
           return {

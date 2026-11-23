@@ -594,3 +594,77 @@ test('onFailure "block" turns a failed PreToolUse hook into a deny; the default 
   assert.equal((await decide({ command: 'sleep 30', timeout: 1, onFailure: 'block' })).kind, 'deny')
   assert.deepEqual(await decide({ ...exit1, onFailure: 'continue' }), { kind: 'allow' })
 })
+
+test('a failed tool runs PostToolUseFailure, not PostToolUse', async () => {
+  const root = fixture({
+    '.claude-plugin/plugin.json': '{"name":"fail"}',
+    'hooks/hooks.json': JSON.stringify({
+      hooks: {
+        PostToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'cat > "$CLAUDE_PLUGIN_ROOT/post-ran.json"; echo "should not block" >&2; exit 2' }] }],
+        PostToolUseFailure: [
+          {
+            matcher: 'Bash',
+            hooks: [{ type: 'command', command: `cat > "$CLAUDE_PLUGIN_ROOT/failure-input.json"; printf '{"hookSpecificOutput":{"hookEventName":"PostToolUseFailure","additionalContext":"retry with --force"}}'` }],
+          },
+        ],
+      },
+    }),
+  })
+  const ctx = fakeCtx()
+  createPlugin({ root }).apply(ctx, {})
+  const agent = fakeAgent()
+  const decision = await ctx.listeners['tools/post-execute'][0](
+    { name: 'bash', arguments: { command: 'git push' }, callId: 'c9', agent },
+    { isError: true, content: [{ type: 'text', text: 'rejected: non-fast-forward' }] },
+    async () => ({ kind: 'accept' }),
+  )
+  assert.equal(existsSync(join(root, 'post-ran.json')), false, 'PostToolUse must not run for a failed tool')
+  assert.equal(decision.kind, 'accept')
+  assert.equal(decision.additionalContexts.length, 1)
+  assert.match(decision.additionalContexts[0].content[0].text, /event="PostToolUseFailure"[\s\S]*retry with --force/)
+  const input = JSON.parse(readFileSync(join(root, 'failure-input.json'), 'utf8'))
+  assert.equal(input.hook_event_name, 'PostToolUseFailure')
+  assert.equal(input.tool_name, 'Bash')
+  assert.equal(input.tool_input.command, 'git push')
+  assert.equal(input.tool_use_id, 'c9')
+  assert.equal(input.error, 'rejected: non-fast-forward')
+  assert.equal(input.tool_response, undefined)
+})
+
+test('a successful tool does not run PostToolUseFailure', async () => {
+  const root = fixture({
+    '.claude-plugin/plugin.json': '{"name":"ok"}',
+    'hooks/hooks.json': JSON.stringify({ hooks: { PostToolUseFailure: [{ hooks: [{ type: 'command', command: 'cat > "$CLAUDE_PLUGIN_ROOT/ran.json"' }] }] } }),
+  })
+  const ctx = fakeCtx()
+  createPlugin({ root }).apply(ctx, {})
+  const decision = await ctx.listeners['tools/post-execute'][0](
+    { name: 'bash', arguments: { command: 'ls' }, callId: 'c1', agent: fakeAgent() },
+    { isError: false, content: [{ type: 'text', text: 'a' }] },
+    async () => ({ kind: 'accept' }),
+  )
+  assert.deepEqual(decision, { kind: 'accept' })
+  assert.equal(existsSync(join(root, 'ran.json')), false)
+})
+
+test('hooks get a persistent CLAUDE_PLUGIN_DATA directory', async () => {
+  const root = fixture({
+    '.claude-plugin/plugin.json': '{"name":"Data Plugin"}',
+    'hooks/hooks.json': JSON.stringify({
+      hooks: {
+        SessionStart: [
+          { hooks: [{ type: 'command', command: 'printf %s "$CLAUDE_PLUGIN_DATA" > "$CLAUDE_PLUGIN_ROOT/shell.txt"' }] },
+          { hooks: [{ type: 'command', command: 'node', args: ['-e', 'require("fs").writeFileSync(process.argv[1] + "/exec.txt", process.argv[2])', '${CLAUDE_PLUGIN_ROOT}', '${CLAUDE_PLUGIN_DATA}'] }] },
+        ],
+      },
+    }),
+  })
+  const ctx = fakeCtx()
+  createPlugin({ root, env: { CACHE_DIR: '${CLAUDE_PLUGIN_DATA}/cache' } }).apply(ctx, {})
+  const agent = fakeAgent()
+  await ctx.listeners['agent/created'][0]({ agent, source: 'startup' })
+  const expected = join(process.env.DSH_HOME, 'state', 'claude-compat', 'plugin-data', 'data-plugin')
+  assert.equal(readFileSync(join(root, 'shell.txt'), 'utf8'), expected)
+  assert.equal(readFileSync(join(root, 'exec.txt'), 'utf8'), expected)
+  assert.ok(statSync(expected).isDirectory())
+})

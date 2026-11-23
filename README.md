@@ -34,7 +34,8 @@ updated with `sync`.
 | `agents/<n>.md` | skill `<plugin>-agent-<n>`: a role brief to pass to `subagent` or `spawn_teammate` |
 | `CLAUDE.md`-style files you list | system prompt section, with `<!--harness:claude-only-->` blocks removed |
 | `PreToolUse` hook | `tools/pre-execute`; `ask` becomes a DSH approval, `deny` or exit 2 denies, `updatedInput` is denied because DSH cannot rewrite arguments |
-| `PostToolUse` hook | `tools/post-execute`; exit 2 blocks the result and its stderr becomes the feedback, `additionalContext` rides on the decision |
+| `PostToolUse` hook | `tools/post-execute` after a successful tool; exit 2 blocks the result and its stderr becomes the feedback, `additionalContext` rides on the decision |
+| `PostToolUseFailure` hook | `tools/post-execute` after a failed tool; input carries `error` instead of `tool_response`, `additionalContext` and exit 2 stderr reach the model as context, nothing is blocked |
 | `SessionStart` hook | `agent/created` of a root agent (subagents skipped, as in Claude Code) |
 | `UserPromptSubmit` hook | a step carrying a user message; a block keeps the prompt from the model |
 | `Stop`, `SubagentStop` hooks | `agent/turn-stopping`; `{"decision":"block"}` steers one more step |
@@ -45,8 +46,8 @@ Hooks get Claude Code's stdin JSON: `session_id`, `cwd`, `hook_event_name`, `too
 Claude names such as `Bash`, `tool_input`, `stop_hook_active` and `transcript_path`.
 `tool_response` uses Claude's per-tool shape: `stdout` and `stderr` for Bash, `file.content`
 for Read, `filePath` plus edit strings for Write and Edit, and `filenames` for Glob. Their
-environment has `CLAUDE_PLUGIN_ROOT` and `CLAUDE_PROJECT_DIR`, plus `CLAUDE_HARNESS=dsh` so a
-script can tell the two harnesses apart. A hook with `args` runs in exec form, as in Claude Code: `command` is spawned directly with those arguments and no shell, and `${CLAUDE_PLUGIN_ROOT}` and `${CLAUDE_PROJECT_DIR}` are replaced inside each argument as plain text. `onFailure: "block"` makes a crash, a timeout or an exit code other than 0 and 2 count as a block. Matching hooks run in parallel, each in its own process
+environment has `CLAUDE_PLUGIN_ROOT`, `CLAUDE_PLUGIN_DATA` and `CLAUDE_PROJECT_DIR`, plus `CLAUDE_HARNESS=dsh` so a
+script can tell the two harnesses apart. A hook with `args` runs in exec form, as in Claude Code: `command` is spawned directly with those arguments and no shell, and `${CLAUDE_PLUGIN_ROOT}`, `${CLAUDE_PLUGIN_DATA}` and `${CLAUDE_PROJECT_DIR}` are replaced inside each argument as plain text. `CLAUDE_PLUGIN_DATA` is `$DSH_HOME/state/claude-compat/plugin-data/<plugin>` (default `~/.dsh`), created on first use and kept across plugin updates, like `~/.claude/plugins/data/<id>` in Claude Code. `onFailure: "block"` makes a crash, a timeout or an exit code other than 0 and 2 count as a block. Matching hooks run in parallel, each in its own process
 group. A timeout or a cancelled turn kills the whole group.
 
 `transcript_path` points at a Claude-shaped JSONL export of the DSH session under

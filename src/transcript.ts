@@ -181,6 +181,11 @@ function stateHome(): string {
   return join(base, 'state', 'claude-compat')
 }
 
+/** Per-plugin persistent data directory, the DSH counterpart of `~/.claude/plugins/data/<id>`. */
+export function pluginDataDir(pluginName: string): string {
+  return join(stateHome(), 'plugin-data', pluginName.replace(/[^A-Za-z0-9_-]/g, '-'))
+}
+
 export function transcriptPath(agent: Agent, owner?: string): string {
   return join(stateHome(), 'transcripts', `${String(agent.session.header.id).replace(/[^A-Za-z0-9_-]/g, '')}${owner ? `-${owner}` : ''}.jsonl`)
 }
