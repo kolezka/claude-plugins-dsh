@@ -2,7 +2,7 @@
 import { spawn } from 'node:child_process'
 import { DEFAULT_HOOK_TIMEOUT_S, type HookSpec } from './plugin-files.js'
 
-const PLACEHOLDERS = ['CLAUDE_PLUGIN_ROOT', 'CLAUDE_PROJECT_DIR'] as const
+const PLACEHOLDERS = ['CLAUDE_PLUGIN_ROOT', 'CLAUDE_PLUGIN_DATA', 'CLAUDE_PROJECT_DIR'] as const
 
 /** Exec-form substitution: each placeholder becomes its value as plain text, never shell syntax. */
 function expandPlaceholders(text: string, env: Record<string, string | undefined>): string {

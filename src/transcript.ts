@@ -181,7 +181,12 @@ function stateHome(): string {
   return join(base, 'state', 'claude-compat')
 }
 
-export function transcriptPath(agent: Agent, owner?: string): string {
+/** Per-plugin persistent data directory, the DSH counterpart of `~/.claude/plugins/data/<id>`. */
+export function pluginDataDir(pluginName: string): string {
+  return join(stateHome(), 'plugin-data', pluginName.replace(/[^A-Za-z0-9_-]/g, '-'))
+}
+
+export function transcriptPath(agent: Pick<Agent, 'session'>, owner?: string): string {
   return join(stateHome(), 'transcripts', `${String(agent.session.header.id).replace(/[^A-Za-z0-9_-]/g, '')}${owner ? `-${owner}` : ''}.jsonl`)
 }
 
@@ -189,7 +194,7 @@ export function transcriptPath(agent: Agent, owner?: string): string {
 const exported = new Map<string, number>()
 
 /** Bring the Claude-shaped transcript up to date by appending events not yet written. */
-export function syncTranscript(agent: Agent, cwd: string, owner?: string): string {
+export function syncTranscript(agent: Pick<Agent, 'session'>, cwd: string, owner?: string): string {
   const path = transcriptPath(agent, owner)
   const events = sessionEvents(agent.session)
   let done = exported.get(path)
@@ -203,7 +208,7 @@ export function syncTranscript(agent: Agent, cwd: string, owner?: string): strin
   return path
 }
 
-export function dropTranscript(agent: Agent, owner?: string): void {
+export function dropTranscript(agent: Pick<Agent, 'session'>, owner?: string): void {
   const path = transcriptPath(agent, owner)
   exported.delete(path)
   rmSync(path, { force: true })

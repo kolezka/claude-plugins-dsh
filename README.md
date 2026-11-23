@@ -29,13 +29,19 @@ updated with `sync`.
 
 | Claude Code | DSH |
 |---|---|
-| `skills/<n>/SKILL.md` | skill at rank 450, so a same-named skill in `~/.dsh/skills` still wins |
+| `skills/<n>/SKILL.md` | skill at rank 450, so a same-named skill in `~/.dsh/skills` still wins; a root `SKILL.md` with no `skills/` loads as one skill named after the plugin |
 | `commands/<n>.md` | `/<plugin>-<n>` slash command (prefix configurable); the body, with `$ARGUMENTS` and `$1` to `$9`, becomes the next turn |
-| `agents/<n>.md` | skill `<plugin>-agent-<n>`: a role brief to pass to `subagent` or `spawn_teammate` |
+| `agents/<n>.md` | skill `<plugin>-agent-<n>`: a role brief to pass to `subagent` or `spawn_teammate`; subfolders join the name (`agents/review/security.md` is `<plugin>-agent-review-security`) |
+| `plugin.json` `commands`, `agents`, `skills`, `hooks` | as in Claude Code: `commands` and `agents` replace the default folder, `skills` adds to it, `hooks` merges with `hooks/hooks.json`; `commands` also takes the object map with `source` or `content` |
+| `plugin.json` `userConfig` | values from the row config `options`; hooks get `CLAUDE_PLUGIN_OPTION_<KEY>`, `${user_config.KEY}` is replaced in exec-form hook args and in skill, agent and command text (sensitive values are not put into text) |
+| `bin/` | appended to the end of `PATH` for shell tools while the plugin is loaded |
 | `CLAUDE.md`-style files you list | system prompt section, with `<!--harness:claude-only-->` blocks removed |
 | `PreToolUse` hook | `tools/pre-execute`; `ask` becomes a DSH approval, `deny` or exit 2 denies, `updatedInput` is denied because DSH cannot rewrite arguments |
-| `PostToolUse` hook | `tools/post-execute`; exit 2 blocks the result and its stderr becomes the feedback, `additionalContext` rides on the decision |
+| `PostToolUse` hook | `tools/post-execute` after a successful tool; exit 2 blocks the result and its stderr becomes the feedback, `additionalContext` rides on the decision |
+| `PostToolUseFailure` hook | `tools/post-execute` after a failed tool; input carries `error` instead of `tool_response`, `additionalContext` and exit 2 stderr reach the model as context, nothing is blocked |
 | `SessionStart` hook | `agent/created` of a root agent (subagents skipped, as in Claude Code) |
+| `SubagentStart` hook | `agent/created` of a subagent; `agent_id` is the child session id, `agent_type` (and the matcher) is its agent preset, `additionalContext` goes to the child |
+| `PreCompact` hook | `session/event` with `compaction/start`; `trigger` is `manual` for `/compact`, otherwise `auto`. Observe only: DSH has no hook before compaction, so output cannot steer the summary |
 | `UserPromptSubmit` hook | a step carrying a user message; a block keeps the prompt from the model |
 | `Stop`, `SubagentStop` hooks | `agent/turn-stopping`; `{"decision":"block"}` steers one more step |
 | `SessionEnd` hook | `agent/disposed` |
@@ -45,15 +51,15 @@ Hooks get Claude Code's stdin JSON: `session_id`, `cwd`, `hook_event_name`, `too
 Claude names such as `Bash`, `tool_input`, `stop_hook_active` and `transcript_path`.
 `tool_response` uses Claude's per-tool shape: `stdout` and `stderr` for Bash, `file.content`
 for Read, `filePath` plus edit strings for Write and Edit, and `filenames` for Glob. Their
-environment has `CLAUDE_PLUGIN_ROOT` and `CLAUDE_PROJECT_DIR`, plus `CLAUDE_HARNESS=dsh` so a
-script can tell the two harnesses apart. A hook with `args` runs in exec form, as in Claude Code: `command` is spawned directly with those arguments and no shell, and `${CLAUDE_PLUGIN_ROOT}` and `${CLAUDE_PROJECT_DIR}` are replaced inside each argument as plain text. `onFailure: "block"` makes a crash, a timeout or an exit code other than 0 and 2 count as a block. Matching hooks run in parallel, each in its own process
+environment has `CLAUDE_PLUGIN_ROOT`, `CLAUDE_PLUGIN_DATA` and `CLAUDE_PROJECT_DIR`, plus `CLAUDE_HARNESS=dsh` so a
+script can tell the two harnesses apart. A hook with `args` runs in exec form, as in Claude Code: `command` is spawned directly with those arguments and no shell, and `${CLAUDE_PLUGIN_ROOT}`, `${CLAUDE_PLUGIN_DATA}` and `${CLAUDE_PROJECT_DIR}` are replaced inside each argument as plain text. `CLAUDE_PLUGIN_DATA` is `$DSH_HOME/state/claude-compat/plugin-data/<plugin>` (default `~/.dsh`), created on first use and kept across plugin updates, like `~/.claude/plugins/data/<id>` in Claude Code. `onFailure: "block"` makes a crash, a timeout or an exit code other than 0 and 2 count as a block. Matching hooks run in parallel, each in its own process
 group. A timeout or a cancelled turn kills the whole group.
 
 `transcript_path` points at a Claude-shaped JSONL export of the DSH session under
 `$DSH_HOME/state/claude-compat/transcripts/`. It is mode 0600, grows by appending, and is
 deleted when the agent is disposed.
 
-Not mapped: function hooks (`hooks.json` `modules`), `PreCompact`, `Notification`, LSP
+Not mapped: function hooks (`hooks.json` `modules`), `Notification`, LSP
 servers, and per-agent model pins.
 
 ## Add it to a plugin
@@ -114,7 +120,10 @@ Or for every profile, add a row to `~/.dsh/cordis.patch.yml`. DSH picks it up wi
       name: "file:///abs/path/to/plugin/dsh/index.js"
 ```
 
-A row config can turn parts off: `config: { disable: [hooks] }`.
+A row config can turn parts off: `config: { disable: [hooks] }` (parts: `skills`, `commands`,
+`agents`, `instructions`, `hooks`, `bin`). Values for the plugin's `userConfig` go in
+`config: { options: { api_url: https://example.com } }`; a required option without a value or
+default is reported as a warning.
 
 ## Updating installed plugins
 

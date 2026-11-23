@@ -33,6 +33,8 @@ export interface SessionHeader {
   id: string
   cwd?: string
   origin?: 'subagent'
+  /** Agent preset the session runs under; set for subagents. */
+  agentPreset?: string
 }
 
 export type SessionEvent =
@@ -171,6 +173,7 @@ export interface HostEvents {
   'tools/pre-execute': (exec: ToolExecution, next: () => Promise<PreToolDecision>) => Promise<PreToolDecision>
   'tools/post-execute': (exec: ToolExecution, result: Readonly<ToolExecutionResult>, next: () => Promise<PostToolDecision>) => Promise<PostToolDecision>
   'tools/result': (exec: ToolExecution, result: ToolExecutionResult) => void
+  'session/event': (session: Session, event: SessionEvent) => void
 }
 
 export type HostEventSubscriber = UnionToIntersection<{
