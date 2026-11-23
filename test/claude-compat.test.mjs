@@ -668,3 +668,165 @@ test('hooks get a persistent CLAUDE_PLUGIN_DATA directory', async () => {
   assert.equal(readFileSync(join(root, 'exec.txt'), 'utf8'), expected)
   assert.ok(statSync(expected).isDirectory())
 })
+
+// ---- Claude Code plugin parity: userConfig, manifest component paths, SubagentStart, PreCompact, bin/
+
+const skillsOf = async (ctx) => (await ctx.providers[0].list()).map((c) => c.name).sort()
+const skillText = async (ctx, name) => {
+  const candidate = (await ctx.providers[0].list()).find((c) => c.name === name)
+  return (await ctx.providers[0].get(candidate)).content
+}
+
+test('userConfig values reach hooks as CLAUDE_PLUGIN_OPTION_* and ${user_config.*}, sensitive ones stay out of content', async () => {
+  const root = fixture({
+    '.claude-plugin/plugin.json': JSON.stringify({
+      name: 'cfg',
+      userConfig: {
+        api_url: { type: 'string', title: 'API', description: 'API URL', default: 'https://default.example' },
+        api_token: { type: 'string', title: 'Token', description: 'Token', sensitive: true, required: true },
+        regions: { type: 'string', title: 'Regions', description: 'Regions', multiple: true },
+      },
+    }),
+    'skills/use/SKILL.md': '---\nname: use\ndescription: use it\n---\nCall ${user_config.api_url} with ${user_config.api_token}.',
+    'hooks/hooks.json': JSON.stringify({
+      hooks: {
+        SessionStart: [
+          {
+            hooks: [
+              { type: 'command', command: 'printf "%s|%s|%s" "$CLAUDE_PLUGIN_OPTION_API_URL" "$CLAUDE_PLUGIN_OPTION_API_TOKEN" "$CLAUDE_PLUGIN_OPTION_REGIONS" > "$CLAUDE_PLUGIN_ROOT/shell.txt"' },
+              { type: 'command', command: '/bin/sh', args: ['-c', 'printf "%s" "$1" > "$0"', '${CLAUDE_PLUGIN_ROOT}/exec.txt', '${user_config.api_token}'] },
+            ],
+          },
+        ],
+      },
+    }),
+  })
+  const ctx = fakeCtx()
+  createPlugin({ root }).apply(ctx, { options: { api_token: 's3cret', regions: ['eu', 'us'] } })
+  await ctx.listeners['agent/created'][0]({ agent: fakeAgent(), source: 'startup', signal: live() })
+  assert.equal(readFileSync(join(root, 'shell.txt'), 'utf8'), 'https://default.example|s3cret|eu,us')
+  assert.equal(readFileSync(join(root, 'exec.txt'), 'utf8'), 's3cret')
+  const content = await skillText(ctx, 'use')
+  assert.match(content, /Call https:\/\/default\.example with /)
+  assert.doesNotMatch(content, /s3cret/)
+
+  const missing = fakeCtx()
+  createPlugin({ root }).apply(missing, {})
+  assert.ok(missing.warnings.some((w) => /api_token/.test(w) && /required/.test(w)))
+})
+
+test('manifest component paths: commands and agents replace defaults, skills add, hooks merge', async () => {
+  const root = fixture({
+    '.claude-plugin/plugin.json': JSON.stringify({
+      name: 'paths',
+      commands: { status: { source: './extra/status.md', argumentHint: '[env]' }, about: { content: 'Explain $ARGUMENTS.', description: 'About it' } },
+      agents: ['./custom/review/security.md'],
+      skills: ['./more-skills/'],
+      hooks: './config/hooks.json',
+    }),
+    'commands/ignored.md': '---\ndescription: default dir\n---\nignored',
+    'extra/status.md': '---\ndescription: Status\n---\nStatus for $ARGUMENTS',
+    'agents/ignored.md': '---\ndescription: default agent\n---\nignored',
+    'custom/review/security.md': '---\ndescription: Security review\n---\nReview it.',
+    'skills/base/SKILL.md': '---\ndescription: base skill\n---\nbase',
+    'more-skills/extra/SKILL.md': '---\ndescription: extra skill\n---\nextra',
+    'hooks/hooks.json': JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: 'command', command: 'echo from-default' }] }] } }),
+    'config/hooks.json': JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: 'command', command: 'echo from-manifest' }] }] } }),
+  })
+  const ctx = fakeCtx()
+  createPlugin({ root }).apply(ctx, {})
+  assert.deepEqual(ctx.commandDefs.map((d) => d.name).sort(), ['paths-about', 'paths-status'])
+  assert.deepEqual(await skillsOf(ctx), ['base', 'extra', 'paths-agent-security'])
+  const agent = fakeAgent()
+  await ctx.listeners['agent/created'][0]({ agent, source: 'startup', signal: live() })
+  const text = agent.injected.map((m) => m.content[0].text).join('\n')
+  assert.match(text, /from-default/)
+  assert.match(text, /from-manifest/)
+})
+
+test('a manifest hooks path naming the default file loads it once', async () => {
+  const root = fixture({
+    '.claude-plugin/plugin.json': JSON.stringify({ name: 'dup', hooks: './hooks/hooks.json' }),
+    'hooks/hooks.json': JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: 'command', command: 'echo once' }] }] } }),
+  })
+  const ctx = fakeCtx()
+  createPlugin({ root }).apply(ctx, {})
+  const agent = fakeAgent()
+  await ctx.listeners['agent/created'][0]({ agent, source: 'startup', signal: live() })
+  assert.equal(agent.injected[0].content[0].text.match(/once/g).length, 1)
+})
+
+test('root SKILL.md loads as one skill and agent subfolders join the agent name', async () => {
+  const root = fixture({
+    '.claude-plugin/plugin.json': '{"name":"solo"}',
+    'SKILL.md': '---\ndescription: the whole plugin\n---\nroot skill',
+    'agents/review/security.md': '---\ndescription: Security review\n---\nReview it.',
+    'agents/plain.md': '---\ndescription: Plain\n---\nplain',
+  })
+  const ctx = fakeCtx()
+  createPlugin({ root }).apply(ctx, {})
+  assert.deepEqual(await skillsOf(ctx), ['solo', 'solo-agent-plain', 'solo-agent-review-security'])
+  assert.match(await skillText(ctx, 'solo'), /root skill/)
+})
+
+test('SubagentStart fires for subagents with agent_id and agent_type, context goes to the child', async () => {
+  const root = fixture({
+    '.claude-plugin/plugin.json': '{"name":"subs"}',
+    'hooks/hooks.json': JSON.stringify({
+      hooks: {
+        SessionStart: [{ hooks: [{ type: 'command', command: 'echo root-only' }] }],
+        SubagentStart: [{ matcher: 'explore', hooks: [{ type: 'command', command: 'cat > "$CLAUDE_PLUGIN_ROOT/sub.json"; printf \'{"hookSpecificOutput":{"hookEventName":"SubagentStart","additionalContext":"child rules"}}\'' }] }],
+      },
+    }),
+  })
+  const ctx = fakeCtx()
+  createPlugin({ root }).apply(ctx, {})
+  const created = ctx.listeners['agent/created']
+  const child = fakeAgent([], { id: 'child-1', origin: 'subagent', agentPreset: 'explore' })
+  for (const listener of created) await listener({ agent: child, source: 'startup', signal: live() })
+  assert.equal(child.injected.length, 1)
+  assert.match(child.injected[0].content[0].text, /child rules/)
+  const input = JSON.parse(readFileSync(join(root, 'sub.json'), 'utf8'))
+  assert.equal(input.hook_event_name, 'SubagentStart')
+  assert.equal(input.agent_id, 'child-1')
+  assert.equal(input.agent_type, 'explore')
+  const other = fakeAgent([], { id: 'child-2', origin: 'subagent', agentPreset: 'plan' })
+  for (const listener of created) await listener({ agent: other, source: 'startup', signal: live() })
+  assert.equal(other.injected.length, 0)
+})
+
+test('PreCompact fires when the session log records compaction/start', async () => {
+  const root = fixture({
+    '.claude-plugin/plugin.json': '{"name":"pc"}',
+    'hooks/hooks.json': JSON.stringify({ hooks: { PreCompact: [{ matcher: 'manual', hooks: [{ type: 'command', command: 'cat > "$CLAUDE_PLUGIN_ROOT/pc.json"' }] }] } }),
+  })
+  const ctx = fakeCtx()
+  createPlugin({ root }).apply(ctx, {})
+  assert.equal(ctx.listeners['session/event']?.length, 1, 'PreCompact needs a session/event listener')
+  const [onEvent] = ctx.listeners['session/event']
+  const session = fakeAgent().session
+  onEvent(session, { type: 'assistant/message', data: { message: { content: [] } } })
+  onEvent(session, { type: 'compaction/start', data: { compactionId: 'c1', turn: 3 } })
+  await new Promise((r) => setTimeout(r, 300))
+  assert.equal(existsSync(join(root, 'pc.json')), false, 'auto compaction does not match the manual matcher')
+  onEvent(session, { type: 'compaction/start', data: { compactionId: 'c2', sourceCommandId: 'cmd-1', turn: 3 } })
+  for (let i = 0; i < 50 && !existsSync(join(root, 'pc.json')); i++) await new Promise((r) => setTimeout(r, 50))
+  const input = JSON.parse(readFileSync(join(root, 'pc.json'), 'utf8'))
+  assert.equal(input.hook_event_name, 'PreCompact')
+  assert.equal(input.trigger, 'manual')
+  assert.equal(input.custom_instructions, null)
+  assert.equal(input.session_id, 'sess-1')
+})
+
+test('bin/ is appended to PATH while the plugin is applied and removed on dispose', () => {
+  const root = fixture({ '.claude-plugin/plugin.json': '{"name":"tools"}', 'bin/hello-tool.sh': '#!/bin/sh\necho hi' })
+  const before = process.env.PATH
+  const disposers = []
+  const ctx = fakeCtx({ effect: (fn) => disposers.push(fn()) })
+  createPlugin({ root }).apply(ctx, {})
+  const entries = process.env.PATH.split(':')
+  assert.equal(entries.at(-1), join(root, 'bin'))
+  assert.equal(entries.slice(0, -1).join(':'), before)
+  for (const dispose of disposers) dispose?.()
+  assert.equal(process.env.PATH, before)
+})

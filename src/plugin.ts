@@ -1,10 +1,10 @@
 // createPlugin: one Claude Code plugin tree -> one DSH (Cordis) plugin.
 import packageMetadata from '../package.json' with { type: 'json' }
 import { randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { existsSync, mkdirSync, statSync } from 'node:fs'
+import { delimiter, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import type { Agent, HostContext, PostToolDecision, PreToolDecision, SkillCandidate, SkillDefinition, SkillProvider, UserMessage } from './dsh-types.js'
+import type { Agent, HostContext, Session, SessionEvent, PostToolDecision, PreToolDecision, SkillCandidate, SkillDefinition, SkillProvider, UserMessage } from './dsh-types.js'
 import { interpretHookResult, runHook, type HookOutcome, type HookRunResult } from './hooks.js'
 import {
   discoverAgents,
@@ -12,6 +12,7 @@ import {
   discoverSkills,
   escapeClosingTag,
   expandPluginRoot,
+  expandUserConfig,
   kebab,
   matcherMatches,
   parseFrontMatter,
@@ -19,11 +20,14 @@ import {
   readManifest,
   readText,
   renderCommand,
+  resolveUserConfig,
   stripClaudeOnlyBlocks,
+  userConfigEnv,
   type AgentOptions,
   type CommandOptions,
   type HookSpec,
   type SkillOptions,
+  type UserConfig,
 } from './plugin-files.js'
 import {
   claudeToolName,
@@ -41,7 +45,7 @@ import {
 export const COMPAT_VERSION = packageMetadata.version
 export const SKILL_RANK = 450
 
-export type Part = 'skills' | 'commands' | 'agents' | 'instructions' | 'hooks'
+export type Part = 'skills' | 'commands' | 'agents' | 'instructions' | 'hooks' | 'bin'
 
 export interface PluginSpec {
   /** Plugin root, the directory holding `.claude-plugin/`. */
@@ -62,6 +66,8 @@ export interface PluginSpec {
 export interface RowConfig {
   /** Parts to turn off for this row; replaces `disableByDefault`. */
   disable?: Part[]
+  /** Answers to the manifest `userConfig` options, keyed by option name. */
+  options?: Record<string, unknown>
 }
 
 export interface DshPlugin {
@@ -71,6 +77,7 @@ export interface DshPlugin {
 }
 
 type Warn = (message: string) => void
+type SessionOwner = Pick<Agent, 'session'>
 
 interface SkillLocator {
   kind: 'skill' | 'agent'
@@ -107,17 +114,41 @@ export function createPlugin(spec: PluginSpec): DshPlugin {
     const disabled = new Set<Part>(config.disable ?? spec.disableByDefault ?? [])
     const enabled = (part: Part): boolean => !disabled.has(part)
     const warn: Warn = (msg) => (ctx.logger ?? console).warn(`[${id}] ${msg}`)
+    const userConfig = resolveUserConfig(manifest, config.options)
+    for (const key of userConfig.missing) warn(`userConfig option ${key} is required but has no value; set it in the row config options`)
 
     // Each part waits for its own service, so a profile without one keeps the rest.
-    if (enabled('skills') || enabled('agents')) ctx.inject(['skills'], (sub) => registerSkills(sub, enabled, warn))
-    if (enabled('commands')) ctx.inject(['commands'], (sub) => registerCommands(sub, warn))
+    if (enabled('skills') || enabled('agents')) ctx.inject(['skills'], (sub) => registerSkills(sub, enabled, warn, userConfig))
+    if (enabled('commands')) ctx.inject(['commands'], (sub) => registerCommands(sub, warn, userConfig))
     if (enabled('instructions')) ctx.inject(['systemPrompt'], (sub) => registerInstructions(sub, warn))
-    if (enabled('hooks')) registerHooks(ctx, warn)
+    if (enabled('hooks')) registerHooks(ctx, warn, userConfig)
+    if (enabled('bin')) registerBin(ctx)
+  }
+
+  // ---- bin/: on the shell PATH, after the user's own entries, as in Claude Code
+
+  function registerBin(ctx: HostContext): void {
+    const binDir = join(root, 'bin')
+    try {
+      if (!statSync(binDir).isDirectory()) return
+    } catch {
+      return
+    }
+    // DSH shells inherit process.env at spawn time; ctx.shellEnv only carries DSH_* names.
+    ctx.effect(() => {
+      process.env.PATH = process.env.PATH ? `${process.env.PATH}${delimiter}${binDir}` : binDir
+      return () => {
+        const entries = (process.env.PATH ?? '').split(delimiter)
+        const at = entries.lastIndexOf(binDir)
+        if (at >= 0) entries.splice(at, 1)
+        process.env.PATH = entries.join(delimiter)
+      }
+    })
   }
 
   // ---- skills and agent briefs
 
-  function registerSkills(ctx: HostContext, enabled: (part: Part) => boolean, warn: Warn): void {
+  function registerSkills(ctx: HostContext, enabled: (part: Part) => boolean, warn: Warn, userConfig: UserConfig): void {
     if (!ctx.skills?.registerProvider) return warn('skills service missing, skills not registered')
     const provider: SkillProvider = {
       name: id,
@@ -161,7 +192,7 @@ export function createPlugin(spec: PluginSpec): DshPlugin {
         const text = readText(locator.path)
         if (text === undefined) return undefined
         const { body } = parseFrontMatter(text)
-        let content = expandPluginRoot(body, root)
+        let content = expandUserConfig(expandPluginRoot(body, root), userConfig, { content: true })
         if (locator.kind === 'skill') {
           content = `${harnessNote()}\n> Relative paths in this skill resolve from \`${locator.base}\`.\n\n${content}`
         } else {
@@ -197,7 +228,7 @@ export function createPlugin(spec: PluginSpec): DshPlugin {
 
   // ---- slash commands
 
-  function registerCommands(ctx: HostContext, warn: Warn): void {
+  function registerCommands(ctx: HostContext, warn: Warn, userConfig: UserConfig): void {
     const commands = ctx.commands
     if (!commands?.register) return
     for (const command of discoverCommands(root, spec.commands)) {
@@ -217,7 +248,7 @@ export function createPlugin(spec: PluginSpec): DshPlugin {
             invocation.agent.followup({
               id: randomUUID(),
               role: 'user',
-              content: [{ type: 'text', text: `<command-name>/${pluginName}:${command.stem}</command-name>\n\n${renderCommand(body, invocation.rawInput, root)}` }],
+              content: [{ type: 'text', text: `<command-name>/${pluginName}:${command.stem}</command-name>\n\n${expandUserConfig(renderCommand(body, invocation.rawInput, root), userConfig, { content: true })}` }],
               source: { kind: 'user' },
             })
             return { kind: 'success', text: `/${name} queued` }
@@ -255,9 +286,12 @@ export function createPlugin(spec: PluginSpec): DshPlugin {
 
   // ---- hooks
 
-  function registerHooks(ctx: HostContext, warn: Warn): void {
+  function registerHooks(ctx: HostContext, warn: Warn, userConfig: UserConfig): void {
     const only = spec.hooks?.events ? new Set(spec.hooks.events) : undefined
-    const hooks = readHooks(root).filter((hook) => !only || only.has(hook.event))
+    // Exec-form args are not shell-parsed, so `${user_config.KEY}` is substituted there only.
+    const hooks = readHooks(root)
+      .filter((hook) => !only || only.has(hook.event))
+      .map((hook) => (hook.args ? { ...hook, args: hook.args.map((arg) => expandUserConfig(arg, userConfig, { content: false })) } : hook))
     if (!hooks.length) return
     const byEvent = (event: string): HookSpec[] => hooks.filter((hook) => hook.event === event)
     // Separate copies of the runtime must not append to or delete another plugin's export.
@@ -272,7 +306,7 @@ export function createPlugin(spec: PluginSpec): DshPlugin {
       })
     })
 
-    const cwdOf = (agent: Agent): string => {
+    const cwdOf = (agent: SessionOwner): string => {
       try {
         return workingDirectory?.get(agent.session) || agent.session.header.cwd || process.cwd()
       } catch {
@@ -284,14 +318,14 @@ export function createPlugin(spec: PluginSpec): DshPlugin {
     const dataDir = pluginDataDir(pluginName)
     const envFor = (cwd: string): NodeJS.ProcessEnv => {
       mkdirSync(dataDir, { recursive: true })
-      const env: NodeJS.ProcessEnv = { ...process.env, CLAUDE_PLUGIN_ROOT: root, CLAUDE_PLUGIN_DATA: dataDir, CLAUDE_PROJECT_DIR: cwd, CLAUDE_HARNESS: 'dsh', DSH_CLAUDE_COMPAT: COMPAT_VERSION }
+      const env: NodeJS.ProcessEnv = { ...process.env, ...userConfigEnv(userConfig), CLAUDE_PLUGIN_ROOT: root, CLAUDE_PLUGIN_DATA: dataDir, CLAUDE_PROJECT_DIR: cwd, CLAUDE_HARNESS: 'dsh', DSH_CLAUDE_COMPAT: COMPAT_VERSION }
       for (const [key, value] of Object.entries(spec.env ?? {})) {
         env[key] = expandPluginRoot(String(value), root).replaceAll('${CLAUDE_PLUGIN_DATA}', dataDir).replaceAll('$CLAUDE_PLUGIN_DATA', dataDir)
       }
       return env
     }
 
-    const inputFor = (agent: Agent, event: string, cwd: string, extra: Record<string, unknown> = {}): Record<string, unknown> & { cwd: string } => {
+    const inputFor = (agent: SessionOwner, event: string, cwd: string, extra: Record<string, unknown> = {}): Record<string, unknown> & { cwd: string } => {
       let transcript = transcriptPath(agent, transcriptOwner)
       try {
         transcript = syncTranscript(agent, cwd, transcriptOwner)
@@ -302,7 +336,7 @@ export function createPlugin(spec: PluginSpec): DshPlugin {
     }
 
     // Matching hooks run in parallel, as in Claude Code; results keep hooks.json order.
-    async function fire(event: string, agent: Agent, extra: Record<string, unknown>, options: { filter?: (hook: HookSpec) => boolean; signal?: AbortSignal | undefined } = {}): Promise<HookOutcome[]> {
+    async function fire(event: string, agent: SessionOwner, extra: Record<string, unknown>, options: { filter?: (hook: HookSpec) => boolean; signal?: AbortSignal | undefined } = {}): Promise<HookOutcome[]> {
       const list = byEvent(event).filter(options.filter ?? (() => true))
       if (!list.length) return []
       const cwd = cwdOf(agent)
@@ -348,11 +382,33 @@ export function createPlugin(spec: PluginSpec): DshPlugin {
 
     // SessionStart: once per root agent, before its first input. Claude Code does not run
     // it for subagents. `source` is DSH's own startup|resume|clear|compact value.
-    if (byEvent('SessionStart').length) {
+    // SubagentStart: once per subagent; DSH's agent preset stands in for Claude's agent type.
+    if (byEvent('SessionStart').length || byEvent('SubagentStart').length) {
       ctx.on('agent/created', async ({ agent, source, signal }) => {
-        if (isSubagent(agent)) return
+        if (isSubagent(agent)) {
+          const agentType = agent.session.header.agentPreset || 'subagent'
+          const matches = (hook: HookSpec): boolean => matcherMatches(hook.matcher, agentType)
+          if (!byEvent('SubagentStart').some(matches)) return
+          const results = await fire('SubagentStart', agent, { agent_id: String(agent.session.header.id), agent_type: agentType }, { filter: matches, signal })
+          injectContext(agent, 'SubagentStart', results)
+          return
+        }
+        if (!byEvent('SessionStart').length) return
         const results = await fire('SessionStart', agent, { source: source ?? 'startup' }, { signal })
         injectContext(agent, 'SessionStart', results)
+      })
+    }
+
+    // PreCompact: DSH has no pre-compaction veto, so this observes the durable
+    // `compaction/start` marker. Output cannot steer the summary; it is only logged.
+    if (byEvent('PreCompact').length) {
+      ctx.on('session/event', (session: Session, event: SessionEvent) => {
+        if (event.type !== 'compaction/start') return
+        const data = (event.data ?? {}) as { sourceCommandId?: unknown }
+        const trigger = data.sourceCommandId ? 'manual' : 'auto'
+        const matches = (hook: HookSpec): boolean => matcherMatches(hook.matcher, trigger)
+        if (!byEvent('PreCompact').some(matches)) return
+        fire('PreCompact', { session }, { trigger, custom_instructions: null }, { filter: matches }).catch((error: unknown) => warn(`PreCompact: ${(error as Error).message}`))
       })
     }
 
