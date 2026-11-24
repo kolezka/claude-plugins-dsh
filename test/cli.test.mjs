@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -212,6 +212,107 @@ function checkoutFixture(t, name = 'fixture-plugin') {
   return { temporary, origin, seed, root, home, patch, first, commit, runUpdate }
 }
 
+const buildCommand = 'mkdir -p dist && git rev-parse HEAD >> dist/builds && cp dist/builds dist/output'
+const buildConfig = { artifacts: 'build', build: buildCommand, outputs: ['dist/output'] }
+function artifactFixture(t, config = buildConfig) {
+  const f = checkoutFixture(t)
+  const head = f.commit(f.seed, '0.2.0', { 'package.json': JSON.stringify({ claudePluginDsh: config }), '.gitignore': 'dist/\n' })
+  git(f.seed, 'push', '-q')
+  return { ...f, head, stamp: join(f.root, '.claude-plugin-dsh/build.json') }
+}
+function recordStamp(f, head) {
+  mkdirSync(dirname(f.stamp), { recursive: true })
+  const text = JSON.stringify({ head, command: buildCommand, builtAt: new Date().toISOString() })
+  writeFileSync(f.stamp, text)
+  return text
+}
+for (const scenario of ['fast-forward', 'manual pull', 'current stamp']) {
+  test(`artifact build: ${scenario}`, (t) => {
+    const f = artifactFixture(t)
+    if (scenario !== 'fast-forward') git(f.root, 'pull', '--ff-only')
+    if (scenario === 'manual pull') recordStamp(f, f.first)
+    const result = f.runUpdate()
+    assert.equal(result.status, 0, result.stderr)
+    assert.match(result.stdout, /restart/i)
+    const stamp = JSON.parse(readFileSync(f.stamp, 'utf8'))
+    assert.equal(stamp.head, f.head)
+    assert.equal(stamp.command, buildCommand)
+    assert.ok(Number.isFinite(Date.parse(stamp.builtAt)))
+    if (scenario === 'current stamp') {
+      const again = f.runUpdate()
+      assert.equal(again.status, 0, again.stderr)
+      assert.doesNotMatch(again.stdout, /restart/i)
+    }
+    assert.equal(readFileSync(join(f.root, 'dist/output'), 'utf8'), `${f.head}\n`)
+    assert.equal(git(f.root, 'status', '--porcelain'), '')
+  })
+}
+for (const [command, diagnostic] of [['echo fixture-failure >&2; exit 2', /fixture-failure/], ['true', /dist\/output/]]) {
+  test(`artifact build failure: ${command}`, (t) => {
+    const f = artifactFixture(t, { ...buildConfig, build: command })
+    const old = recordStamp(f, f.first)
+    const result = f.runUpdate()
+    assert.equal(result.status, 1)
+    assert.match(result.stderr, /built output stale/)
+    assert.match(result.stderr, diagnostic)
+    assert.equal(readFileSync(f.stamp, 'utf8'), old)
+    assert.doesNotMatch(result.stdout, /up to date/)
+  })
+}
+for (const stale of [false, true]) test(`artifact check: stale stamp ${stale}`, (t) => {
+  const f = artifactFixture(t)
+  git(f.root, 'pull', '--ff-only')
+  if (stale) recordStamp(f, f.first)
+  const result = f.runUpdate('--check')
+  assert.equal(result.status, 1)
+  assert.match(result.stdout, stale ? new RegExp(`build stale \\(built ${f.first.slice(0, 7)}, HEAD ${f.head.slice(0, 7)}\\)`) : /never built/)
+  assert.equal(existsSync(join(f.root, 'dist')), false)
+  assert.equal(existsSync(f.stamp), stale)
+})
+for (const config of [{ ...buildConfig, typo: true }, { artifacts: 'something' }, { artifacts: 'build' }]) {
+  test(`artifact invalid: ${JSON.stringify(config)}`, (t) => {
+    const f = artifactFixture(t, config)
+    const result = f.runUpdate()
+    assert.equal(result.status, 1)
+    assert.match(result.stderr, /package\.json/)
+  })
+}
+test('artifact release: route and advance managed adapter only', (t) => {
+  const f = artifactFixture(t, { artifacts: 'release', branch: 'release' })
+  git(f.seed, 'checkout', '-b', 'release')
+  const original = readFileSync(f.patch, 'utf8')
+  writeFileSync(f.patch, `${original}# KOLEZKA_DSH_ADAPTERS_START\n${original}# KOLEZKA_DSH_ADAPTERS_END\n`)
+  const wt = join(f.root, '.claude-plugin-dsh/release')
+  for (const version of ['1', '2']) {
+    const release = f.commit(f.seed, version, { 'compiled.js': version })
+    git(f.seed, 'push', '-u', 'origin', 'release')
+    const result = f.runUpdate()
+    assert.equal(result.status, 0, result.stderr)
+    const text = readFileSync(f.patch, 'utf8')
+    assert.ok(text.startsWith(original), 'outside section unchanged')
+    assert.ok(text.includes(`name: "file://${wt}/dsh/index.js"`))
+    assert.ok(text.includes(`# fixture-plugin release ${release}`))
+    assert.equal(git(wt, 'rev-parse', 'HEAD'), release)
+    assert.equal(readFileSync(join(wt, 'compiled.js'), 'utf8'), version)
+    assert.equal(git(f.root, 'status', '--porcelain'), '')
+  }
+})
+test('artifact inspect: reports missing module relative to hooks.json', (t) => {
+  const f = fixture(t)
+  f.write('dsh/index.js', 'exports.apply = () => {}')
+  f.write('hooks/hooks.json', JSON.stringify({ modules: ['../dist/hook-module.js'], hooks: {} }))
+  const result = run(['inspect', f.root])
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /missing.*dist\/hook-module\.js/)
+})
+test('artifact control: source-only output remains unchanged', (t) => {
+  const f = checkoutFixture(t)
+  const result = f.runUpdate()
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(result.stdout, `fixture-plugin: up to date at ${f.first.slice(0, 7)} (0.1.0)\n`)
+  assert.equal(existsSync(join(f.root, '.claude-plugin-dsh')), false)
+})
+
 test('update preserves local commits when checkout is ahead, not behind', (t) => {
   const { root, commit, runUpdate } = checkoutFixture(t)
   const local = commit(root, '0.2.0')
@@ -369,7 +470,13 @@ test('update fetches over HTTPS-style auth with the gh login when no other crede
   const runWith = (path) => spawnSync(process.execPath, [cli, 'update'], { encoding: 'utf8', env: { ...isolated, PATH: path } })
 
   // Control: without gh on PATH the same fetch must fail on auth, so the fixture really requires credentials.
-  const systemPath = (process.env.PATH ?? '').split(':').filter((entry) => !existsSync(join(entry, 'gh'))).join(':')
+  const systemPath = join(temporary, 'without-gh')
+  mkdirSync(systemPath)
+  for (const tool of ['git', 'sh', 'cat']) {
+    const directory = process.env.PATH.split(':').find(entry => existsSync(join(entry, tool)))
+    assert.ok(directory, `fixture requires ${tool}`)
+    symlinkSync(resolve(directory, tool), join(systemPath, tool))
+  }
   let result = runWith(systemPath)
   assert.equal(result.status, 1, result.stdout)
   assert.match(result.stderr, /git fetch origin failed/)
