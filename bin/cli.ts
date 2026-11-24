@@ -11,8 +11,8 @@ Commands:
   inspect <plugin-dir>...                List plugin registrations (loads plugin code)
   sync [--check] <plugin-dir>...          Copy runtime, or check for drift
   update [--check] [--reset] [--patch <file>] [<checkout-dir>...]
-                                        Pull adapter checkouts, install their dsh/ dependencies and
-                                        refresh the pin comments in cordis.patch.yml. Without directories,
+                                        Update checkouts, install adapter dependencies, build declared outputs
+                                        or route adapters to prebuilt release worktrees, and refresh pins. Without directories,
                                         every checkout behind a file:// adapter row in the patch file and
                                         every checkout under $DSH_HOME/plugins-src is updated.
 

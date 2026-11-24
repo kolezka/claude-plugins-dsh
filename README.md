@@ -159,7 +159,27 @@ refuses and prints the undo command. `--reset` moves the branch onto the upstrea
 `git reset --hard` instead; local commits that are not upstream are dropped from the branch
 but stay in the reflog. `--patch <file>` rewrites pins in a different file.
 
-Restart DSH afterwards so it loads the new version.
+### Plugins with built output
+
+Without a declaration the source checkout remains the runtime. To opt in, add one of these fields to the **root `package.json`**. The checkout owns the build scripts, lockfile and outputs. `dsh/package.json` owns only adapter dependencies (a checkout may have several adapters), and `.claude-plugin/plugin.json` describes Claude Code registrations, not how to prepare a checkout.
+
+```json
+"claudePluginDsh": {
+  "artifacts": "build",
+  "build": "bun run build",
+  "outputs": ["dist/hook.js", "dist/hook-module.js"]
+}
+```
+
+On a missing or outdated stamp, or a missing declared output, `update` installs root dependencies with `bun install --frozen-lockfile` if `bun.lock` exists, then executes the command with `sh -c` in the root. Trust the checkout as you would for `bun install`: its build command runs as your user. Only a successful build with all declared outputs present replaces `.claude-plugin-dsh/build.json`. This also works after a manual pull. A failed build may have touched outputs; fix the error and rerun before restarting. `--check` fetches and reports stale state without installing, building or changing the checkout or patch.
+
+```json
+"claudePluginDsh": { "artifacts": "release", "branch": "release" }
+```
+
+Release mode checks out the remote branch detached at `.claude-plugin-dsh/release` and installs adapter dependencies there without building. Managed `name: file://.../dsh/...` rows between `# KOLEZKA_DSH_ADAPTERS_START` and `# KOLEZKA_DSH_ADAPTERS_END` point into this worktree; the pin identifies the release commit. This keeps adapters unchanged but requires a managed patch section. A rewritten release history requires `--reset`. Both modes keep updater state out of Git using the repository's local exclude file.
+
+Run `claude-plugin-dsh inspect <plugin-dir>` to list referenced plugin paths and report missing files, including undeclared build outputs. Restart DSH when the updater prints its restart notice. It never restarts DSH for you.
 
 ## Keeping vendored copies current
 

@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process'
-import { existsSync, readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import { buildArtifacts, declaration, stateDir } from './artifacts.js'
+import { appendFileSync, mkdirSync, existsSync, readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 
@@ -68,12 +69,12 @@ function checkoutRootOf(start: string): string | undefined {
 function checkoutsFromPatch(patchFile: string): string[] {
   if (!existsSync(patchFile)) return []
   const roots: string[] = []
-  for (const match of readFileSync(patchFile, 'utf8').matchAll(/file:\/\/(\/[^"'\s]+)/g)) {
-    const entry = match[1]
+  for (const match of readFileSync(patchFile, 'utf8').matchAll(/(?:"file:\/\/(\/[^"\n]+)"|'file:\/\/(\/[^'\n]+)'|file:\/\/(\/[^"'\s]+))/g)) {
+    const entry = match[1] ?? match[2] ?? match[3]
     // Only adapter bundles; other file:// rows (a plugin's own dist build) are not ours to pull.
     if (entry === undefined || basename(dirname(entry)) !== 'dsh' || !existsSync(entry)) continue
     const root = checkoutRootOf(dirname(entry))
-    if (root) roots.push(root)
+    if (root) roots.push(basename(root) === 'release' && basename(dirname(root)) === stateDir ? dirname(dirname(root)) : root)
   }
   return roots
 }
@@ -174,22 +175,108 @@ export function rewritePin(patchFile: string, checkout: Checkout, hash: string, 
   return false
 }
 
+function checkedGit(root: string, ...args: string[]): string {
+  const result = git(root, ...args)
+  if (!result.ok) throw new Error(`${root}: git ${args.join(' ')} failed\n${result.err}`)
+  return result.out
+}
+
+function ignoreState(root: string): void {
+  if (git(root, 'check-ignore', '-q', `${stateDir}/build.json`).ok && git(root, 'check-ignore', '-q', `${stateDir}/release`).ok) return
+  const exclude = resolve(root, checkedGit(root, 'rev-parse', '--git-path', 'info/exclude'))
+  mkdirSync(dirname(exclude), { recursive: true })
+  appendFileSync(exclude, `\n/${stateDir}/\n`)
+}
+
+function releasePatch(checkout: Checkout, patch: string, wt: string, branch: string, head: string, restore = false): string {
+  const lines = readFileSync(patch, 'utf8').split('\n')
+  const start = lines.indexOf('# KOLEZKA_DSH_ADAPTERS_START'), end = lines.indexOf('# KOLEZKA_DSH_ADAPTERS_END')
+  let matched = false
+  for (let i = start + 1; start >= 0 && i < end; i++) {
+    const match = /^(\s*name:\s*["']?)file:\/\/(.*?)(["']?\s*)$/.exec(lines[i]!)
+    if (!match) continue
+    const path = match[2]!
+    const prefix = path.startsWith(`${wt}/`) ? wt : checkout.root
+    if (!path.startsWith(`${prefix}/`)) continue
+    const suffix = path.slice(prefix.length)
+    if (!/\/dsh\/[^/]+$/.test(suffix)) continue
+    if (restore && prefix !== wt) continue
+    const route = join(restore ? checkout.root : wt, suffix)
+    if (!existsSync(route)) throw new Error(`missing release adapter: ${route}`)
+    lines[i] = `${match[1]}file://${route}${match[3]}`
+    const pin = new RegExp(`^# ${escapeRegExp(checkout.name)} \\S+ [0-9a-f]{7,40}\\s*$`)
+    const j = i - 3
+    const comment = `# ${checkout.name} ${branch} ${head}`
+    if (j > start && pin.test(lines[j]!)) lines[j] = comment
+    else if (!restore) throw new Error(`${patch}: missing pin comment above release adapter ${path}`)
+    matched = true
+  }
+  if (!matched && !restore) throw new Error(`${patch}: no managed release adapter row for ${checkout.root}`)
+  return lines.join('\n')
+}
+
+function deliver(checkout: Checkout, head: string, options: UpdateOptions, patch: string, remote: string, changed: () => void): { pinned: boolean } | undefined {
+  const { root } = checkout
+  const spec = declaration(root)
+  if (spec?.artifacts !== 'release') {
+    if (spec && !buildArtifacts(root, head, spec, options.check, () => ignoreState(root), changed)) return
+    if (!options.check) installAdapterDependencies(root)
+    const wt = join(root, stateDir, 'release')
+    if (existsSync(wt) && existsSync(patch)) {
+      const restored = releasePatch(checkout, patch, wt, checkout.branch, head, true)
+      if (restored !== readFileSync(patch, 'utf8')) {
+        if (options.check) { console.log(`${root}: adapter still routed to release worktree`); return }
+        writeFileSync(patch, restored)
+        changed()
+      }
+    }
+    return { pinned: rewritePin(patch, checkout, head, !options.check) }
+  }
+  const ref = `refs/remotes/${remote}/${spec.branch}`, target = checkedGit(root, 'rev-parse', '--verify', `${ref}^{commit}`)
+  const wt = join(root, stateDir, 'release')
+  let current: string | undefined
+  if (existsSync(wt)) {
+    if (realpathSync(checkedGit(wt, 'rev-parse', '--show-toplevel')) !== realpathSync(wt) || realpathSync(checkedGit(wt, 'rev-parse', '--path-format=absolute', '--git-common-dir')) !== realpathSync(checkedGit(root, 'rev-parse', '--path-format=absolute', '--git-common-dir'))) throw new Error(`${wt}: not a release worktree of ${root}`)
+    if (checkedGit(wt, 'status', '--porcelain', '--untracked-files=no')) throw new Error(`${wt}: release worktree has uncommitted changes`)
+    current = checkedGit(wt, 'rev-parse', 'HEAD')
+  }
+  if (current !== target) {
+    if (options.check) { console.log(`${root}: release stale (${spec.branch} ${short(target)})`); return }
+    if (current && !git(wt, 'merge-base', '--is-ancestor', current, target).ok && !options.reset) throw new Error(`${wt}: cannot fast-forward release; re-run with --reset`)
+    ignoreState(root)
+    if (current) checkedGit(wt, 'checkout', '--detach', target)
+    else checkedGit(root, 'worktree', 'add', '--detach', wt, target)
+    changed()
+  }
+  const replacement = releasePatch(checkout, patch, wt, spec.branch, target)
+  if (!options.check) installAdapterDependencies(wt)
+  if (replacement !== readFileSync(patch, 'utf8')) {
+    if (options.check) { console.log(`${root}: release adapter route or pin stale`); return }
+    writeFileSync(patch, replacement)
+    changed()
+  }
+  return { pinned: true }
+}
+
 export function update(directories: readonly string[], options: UpdateOptions): number {
   const patchFile = options.patch ?? defaultPatchFile()
+  let changed = false
+  const markChanged = () => { changed = true }
   let status = 0
   for (const directory of directories) {
     try {
-      if (!updateOne(openCheckout(directory), options, patchFile)) status = 1
+      if (!updateOne(openCheckout(directory), options, patchFile, markChanged)) status = 1
     } catch (error) {
       status = 1
       console.error(error instanceof Error ? error.message : String(error))
     }
   }
+  if (changed) console.log('DSH loads adapters only at startup; restart DSH to load the changed checkout(s).')
   return status
 }
 
 /** Returns false when the checkout is behind in --check mode. Throws when it cannot be updated. */
-function updateOne(checkout: Checkout, options: UpdateOptions, patchFile: string): boolean {
+function updateOne(checkout: Checkout, options: UpdateOptions, patchFile: string, changed: () => void): boolean {
   const { root, name, upstream } = checkout
   const label = `${name}:`
   const remote = upstream.split('/')[0] ?? 'origin'
@@ -212,8 +299,9 @@ function updateOne(checkout: Checkout, options: UpdateOptions, patchFile: string
   const ahead = base.ok && base.out === target.out && before !== target.out
   if (before === target.out || ahead) {
     // A fresh clone or a manual pull is up to date but may lack the adapter's dependencies.
-    if (!options.check) installAdapterDependencies(root)
-    const pinned = rewritePin(patchFile, checkout, before, !options.check)
+    const delivery = deliver(checkout, before, options, patchFile, remote, changed)
+    if (!delivery) return false
+    const { pinned } = delivery
     const aheadNote = ahead ? `, ahead of ${upstream} by ${git(root, 'rev-list', '--count', `${target.out}..${before}`).out} commit(s)` : ''
     console.log(`${label} up to date at ${short(before)}${versionBefore ? ` (${versionBefore})` : ''}${aheadNote}${pinned ? '' : noPin}`)
     return true
@@ -242,9 +330,11 @@ function updateOne(checkout: Checkout, options: UpdateOptions, patchFile: string
     throw new Error(`${label} cannot fast-forward: ${why}. Re-run with --reset to move the branch onto ${upstream} (undo: git -C ${root} reset --hard ${short(before)}).`)
   }
 
-  installAdapterDependencies(root)
-  const after = git(root, 'rev-parse', 'HEAD').out
-  const pinned = rewritePin(patchFile, checkout, after, true)
+  changed()
+  const after = checkedGit(root, 'rev-parse', 'HEAD')
+  const delivery = deliver(checkout, after, options, patchFile, remote, changed)
+  if (!delivery) return false
+  const { pinned } = delivery
   const versionAfter = pluginVersion(root)
   const versions = versionBefore || versionAfter ? ` (${versionBefore ?? '?'} -> ${versionAfter ?? '?'})` : ''
   console.log(`${label} ${short(before)} -> ${short(after)}${versions}${pinned ? '' : noPin}`)
