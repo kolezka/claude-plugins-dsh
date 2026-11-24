@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { install } from './install.js'
 import { inspect } from './inspect.js'
 import { scaffold } from './scaffold.js'
 import { sync } from './sync.js'
@@ -8,6 +9,7 @@ const usage = `Usage: claude-plugin-dsh <command> [options] <plugin-dir>...
 
 Commands:
   scaffold [--scope @you] <plugin-dir>...  Generate manifest, locale and runtime
+  install [--check] <plugin-dir>...       Register local adapters in all existing DSH profiles
   inspect <plugin-dir>...                List plugin registrations (loads plugin code)
   sync [--check] <plugin-dir>...          Copy runtime, or check for drift
   update [--check] [--reset] [--patch <file>] [<checkout-dir>...]
@@ -28,7 +30,7 @@ async function main(args: readonly string[]): Promise<number> {
     console.log(usage)
     return 0
   }
-  if (command !== 'scaffold' && command !== 'inspect' && command !== 'sync' && command !== 'update') {
+  if (command !== 'install' && command !== 'scaffold' && command !== 'inspect' && command !== 'sync' && command !== 'update') {
     throw new UsageError(command ? `Unknown command: ${command}` : 'A command is required')
   }
   if (rest.length === 1 && (rest[0] === '-h' || rest[0] === '--help')) {
@@ -52,7 +54,7 @@ async function main(args: readonly string[]): Promise<number> {
       if (scope === undefined || !/^@[a-z0-9][a-z0-9._-]*$/.test(scope)) {
         throw new UsageError(`--scope must look like @name, got ${JSON.stringify(scope)}`)
       }
-    } else if (!positional && arg === '--check' && (command === 'sync' || command === 'update')) {
+    } else if (!positional && arg === '--check' && (command === 'install' || command === 'sync' || command === 'update')) {
       if (check) throw new UsageError('--check may only be supplied once')
       check = true
     } else if (!positional && arg === '--reset' && command === 'update') {
@@ -77,6 +79,7 @@ async function main(args: readonly string[]): Promise<number> {
     return update(targets, { check, reset, patch })
   }
   if (!directories.length) throw new UsageError(`${command} requires at least one plugin directory`)
+  if (command === 'install') return install(directories, check)
   if (command === 'scaffold') {
     scaffold(directories, scope ?? '')
     return 0

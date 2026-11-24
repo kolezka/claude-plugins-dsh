@@ -90,9 +90,23 @@ export function discoverCheckouts(env: NodeJS.ProcessEnv = process.env, patchFil
         .filter((entry) => entry.isDirectory() && existsSync(join(source, entry.name, '.git')))
         .map((entry) => join(source, entry.name))
     : []
+  const fromProfiles: string[] = []
+  const profiles = join(dshHome(env), 'profiles')
+  for (const entry of existsSync(profiles) ? readdirSync(profiles, { withFileTypes: true }) : []) {
+    if (!entry.isDirectory()) continue
+    const dir = join(profiles, entry.name)
+    const manifest = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'))
+    for (const spec of Object.values(manifest.dependencies ?? {})) {
+      if (typeof spec !== 'string' || !spec.startsWith('link:')) continue
+      const adapter = resolve(dir, spec.slice(5))
+      if (basename(adapter) !== 'dsh' || !existsSync(join(dirname(adapter), '.claude-plugin', 'plugin.json'))) continue
+      const root = checkoutRootOf(adapter)
+      if (root) fromProfiles.push(root)
+    }
+  }
   const seen = new Set<string>()
   const roots: string[] = []
-  for (const root of [...checkoutsFromPatch(patchFile), ...fromSource]) {
+  for (const root of [...checkoutsFromPatch(patchFile), ...fromSource, ...fromProfiles]) {
     const key = realpathSync(root)
     if (seen.has(key)) continue
     seen.add(key)
