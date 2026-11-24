@@ -106,19 +106,16 @@ bun x claude-plugin-dsh inspect /path/to/plugin
 
 ## Install into DSH
 
-Through DSH's plugin manager:
+From a local checkout, register the adapter as a bundle in every existing profile. The link keeps the entry point next to the original Claude plugin's skills and hooks. Install the adapter's dependencies in its checkout first.
 
 ```sh
-dsh plugin --profile web add file:/abs/path/to/plugin/dsh
+bun x claude-plugin-dsh install --check /path/to/plugin
+bun x claude-plugin-dsh install /path/to/plugin
 ```
 
-Or for every profile, add a row to `~/.dsh/cordis.patch.yml`. DSH picks it up without a restart:
+The command discovers profiles under `$DSH_HOME/profiles` (default `~/.dsh/profiles`) and calls `dsh plugin` for each. Each profile gets its own **Plugins** switch. Running it again includes newly created profiles without switching disabled bundles back on. If installation stops partway, inspect the named profile before retrying. To uninstall, run `dsh plugin --profile <profile> remove <adapter-package-name>` for each affected profile. `update` also discovers these linked adapter checkouts from profile manifests, even after their global rows are removed.
 
-```yaml
-- insert:
-    - id: claude-compat-my-plugin
-      name: "file:///abs/path/to/plugin/dsh/index.js"
-```
+Migrating an existing global `file://` installation requires a separate cutover. Back up the home patch and profile manifests and lockfiles first. Replace global inserts for rows supplied by the bundle with ID-based overrides for any local configuration you need to retain. Leaving duplicate inserts in place can keep a plugin running even when its bundle is off. The installer does not rewrite your patches.
 
 A row config can turn parts off: `config: { disable: [hooks] }` (parts: `skills`, `commands`,
 `agents`, `instructions`, `hooks`, `bin`). Values for the plugin's `userConfig` go in
