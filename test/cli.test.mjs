@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -470,7 +470,13 @@ test('update fetches over HTTPS-style auth with the gh login when no other crede
   const runWith = (path) => spawnSync(process.execPath, [cli, 'update'], { encoding: 'utf8', env: { ...isolated, PATH: path } })
 
   // Control: without gh on PATH the same fetch must fail on auth, so the fixture really requires credentials.
-  const systemPath = (process.env.PATH ?? '').split(':').filter((entry) => !existsSync(join(entry, 'gh'))).join(':')
+  const systemPath = join(temporary, 'without-gh')
+  mkdirSync(systemPath)
+  for (const tool of ['git', 'sh', 'cat']) {
+    const directory = process.env.PATH.split(':').find(entry => existsSync(join(entry, tool)))
+    assert.ok(directory, `fixture requires ${tool}`)
+    symlinkSync(resolve(directory, tool), join(systemPath, tool))
+  }
   let result = runWith(systemPath)
   assert.equal(result.status, 1, result.stdout)
   assert.match(result.stderr, /git fetch origin failed/)
